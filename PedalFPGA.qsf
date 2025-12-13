@@ -59,6 +59,10 @@ set_global_assignment -name VHDL_FILE tremolo.vhd
 set_global_assignment -name VHDL_FILE overdrive.vhd
 set_global_assignment -name VHDL_FILE distortion.vhd
 set_global_assignment -name VHDL_FILE booster.vhd
+set_global_assignment -name VHDL_FILE delay.vhd
+set_global_assignment -name VHDL_FILE wah.vhd
+set_global_assignment -name VHDL_FILE phaser.vhd
+set_global_assignment -name VHDL_FILE reverb.vhd
 set_global_assignment -name VHDL_FILE au_setup.vhd
 set_global_assignment -name VHDL_FILE au_out.vhd
 set_global_assignment -name VHDL_FILE au_in.vhd

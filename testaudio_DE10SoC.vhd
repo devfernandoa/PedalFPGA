@@ -108,6 +108,46 @@ architecture a of testaudio_DE10SoC is
 		);
 	end component;
 
+	component delay
+	 port (
+			clk         : in  std_logic;
+			sample_in   : in  std_logic_vector(15 downto 0);
+			delay_time  : in  std_logic_vector(4 downto 0);
+			feedback    : in  std_logic_vector(4 downto 0);
+			sample_out  : out std_logic_vector(15 downto 0)
+		);
+	end component;
+
+	component wah
+	 port (
+			clk         : in  std_logic;
+			sample_in   : in  std_logic_vector(15 downto 0);
+			frequency   : in  std_logic_vector(4 downto 0);
+			resonance   : in  std_logic_vector(4 downto 0);
+			sample_out  : out std_logic_vector(15 downto 0)
+		);
+	end component;
+
+	component phaser
+	 port (
+			clk         : in  std_logic;
+			sample_in   : in  std_logic_vector(15 downto 0);
+			rate        : in  std_logic_vector(4 downto 0);
+			depth       : in  std_logic_vector(4 downto 0);
+			sample_out  : out std_logic_vector(15 downto 0)
+		);
+	end component;
+
+	component reverb
+	 port (
+			clk         : in  std_logic;
+			sample_in   : in  std_logic_vector(15 downto 0);
+			room_size   : in  std_logic_vector(4 downto 0);
+			damping     : in  std_logic_vector(4 downto 0);
+			sample_out  : out std_logic_vector(15 downto 0)
+		);
+	end component;
+
 	--AUDIO SIGNALS
 	signal reset 	  : std_logic;
 	signal in_ready   : std_logic;
@@ -127,6 +167,10 @@ architecture a of testaudio_DE10SoC is
 	signal sample_od : std_logic_vector(15 downto 0);
 	signal sample_dis : std_logic_vector(15 downto 0);
 	signal sample_trm : std_logic_vector(15 downto 0);
+	signal sample_dly : std_logic_vector(15 downto 0);
+	signal sample_wah : std_logic_vector(15 downto 0);
+	signal sample_phs : std_logic_vector(15 downto 0);
+	signal sample_rev : std_logic_vector(15 downto 0);
 	signal sample_out : std_logic_vector(15 downto 0);
 	
     -- Control Signals
@@ -138,8 +182,9 @@ architecture a of testaudio_DE10SoC is
 	signal velocidad, ataque: std_logic_vector(15 downto 0);
 	signal onda	  	: std_logic_vector(1 downto 0);
     
-    -- Effect State
-    signal current_effect : integer range 0 to 3 := 0;
+    -- Effect State (8 effects: 0-7)
+    signal current_effect : integer range 0 to 7 := 0;
+    signal key_prev : std_logic_vector(3 downto 0) := "1111";
 
     function seg7(i : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
@@ -207,13 +252,68 @@ begin
     end process;
 
     -- Effect Switching Logic
+    -- KEY0: Cycle through effects 0-3 (Bank A) or 4-7 (Bank B)
+    -- KEY1: Toggle between Bank A (0-3) and Bank B (4-7)
+    -- Within each bank:
+    --   Effect 0/4: Booster/Delay
+    --   Effect 1/5: Distortion/Wah  
+    --   Effect 2/6: Overdrive/Phaser
+    --   Effect 3/7: Tremolo/Reverb
     process(CLOCK_50)
+        variable bank : integer range 0 to 1 := 0;
+        variable effect_in_bank : integer range 0 to 3 := 0;
     begin
         if rising_edge(CLOCK_50) then
-            if KEY(0) = '0' then current_effect <= 0; end if; -- Booster
-            if KEY(1) = '0' then current_effect <= 1; end if; -- Distortion
-            if KEY(2) = '0' then current_effect <= 2; end if; -- Overdrive
-            if KEY(3) = '0' then current_effect <= 3; end if; -- Tremolo
+            -- Detect falling edge (button press)
+            if KEY(0) = '0' and key_prev(0) = '1' then
+                -- Cycle to next effect within current bank
+                if current_effect < 4 then
+                    if current_effect = 3 then
+                        current_effect <= 0;
+                    else
+                        current_effect <= current_effect + 1;
+                    end if;
+                else
+                    if current_effect = 7 then
+                        current_effect <= 4;
+                    else
+                        current_effect <= current_effect + 1;
+                    end if;
+                end if;
+            end if;
+            
+            if KEY(1) = '0' and key_prev(1) = '1' then
+                -- Toggle between banks (0-3 <-> 4-7)
+                if current_effect < 4 then
+                    current_effect <= current_effect + 4;
+                else
+                    current_effect <= current_effect - 4;
+                end if;
+            end if;
+            
+            if KEY(2) = '0' and key_prev(2) = '1' then
+                -- Previous effect in bank
+                if current_effect < 4 then
+                    if current_effect = 0 then
+                        current_effect <= 3;
+                    else
+                        current_effect <= current_effect - 1;
+                    end if;
+                else
+                    if current_effect = 4 then
+                        current_effect <= 7;
+                    else
+                        current_effect <= current_effect - 1;
+                    end if;
+                end if;
+            end if;
+            
+            if KEY(3) = '0' and key_prev(3) = '1' then
+                -- Reset to effect 0
+                current_effect <= 0;
+            end if;
+            
+            key_prev <= KEY;
         end if;
     end process;
 
@@ -290,27 +390,40 @@ begin
 		LEDR <= SW;
 		
         -- Effect Display (Active Low: 0=ON, 1=OFF)
-        -- Mapping: a b c d e f g
-        HEX5 <= "1100000" when current_effect = 0 else -- b (c,d,e,f,g)
-                "1000010" when current_effect = 1 else -- d (b,c,d,e,g)
-                "0000001" when current_effect = 2 else -- O (a,b,c,d,e,f)
-                "1110000"; -- t (d,e,f,g)
+        -- Bank A: bO=Booster, d1=Distortion, Od=Overdrive, tr=Tremolo
+        -- Bank B: dL=Delay, UA=Wah, PH=Phaser, rE=Reverb
+        HEX5 <= "1100000" when current_effect = 0 else -- b (Booster)
+                "1000010" when current_effect = 1 else -- d (Distortion)
+                "0000001" when current_effect = 2 else -- O (Overdrive)
+                "1110000" when current_effect = 3 else -- t (Tremolo)
+                "1000010" when current_effect = 4 else -- d (Delay)
+                "1000001" when current_effect = 5 else -- U (Wah)
+                "0001100" when current_effect = 6 else -- P (Phaser)
+                "1111010";                             -- r (Reverb)
 
         HEX4 <= "0000001" when current_effect = 0 else -- O (bO)
-                "1001111" when current_effect = 1 else -- 1 (d1) (b,c)
+                "1001111" when current_effect = 1 else -- 1 (d1)
                 "1000010" when current_effect = 2 else -- d (Od)
-                "1111010"; -- r (tr) (e,g)
+                "1111010" when current_effect = 3 else -- r (tr)
+                "1110001" when current_effect = 4 else -- L (dL)
+                "0001000" when current_effect = 5 else -- A (UA)
+                "0001001" when current_effect = 6 else -- H (PH)
+                "0110000";                             -- E (rE)
 
 		HEX3<=seg7("000" & SW(9));
 		HEX2<=seg7(SW(8 downto 5));
 		HEX1<=seg7("000" & SW(4));
 		HEX0<=seg7(SW(3 downto 0));
         
-        -- Multiplexer
+        -- Multiplexer (8 effects)
         sample_out <= sample_boost when current_effect = 0 else
                       sample_dis   when current_effect = 1 else
                       sample_od    when current_effect = 2 else
-                      sample_trm;
+                      sample_trm   when current_effect = 3 else
+                      sample_dly   when current_effect = 4 else
+                      sample_wah   when current_effect = 5 else
+                      sample_phs   when current_effect = 6 else
+                      sample_rev;
 
         inst_booster : booster
         port map (	
@@ -345,6 +458,42 @@ begin
                 rate 	   => velocidad, -- Rate: SW 9-5
                 atack 	   => ataque,    -- Depth: SW 4-0
                 wave 	   => onda       -- Triangle
+        );
+
+        inst_delay : delay
+        port map (
+                clk        => CLOCK_50,
+                sample_in  => sample_gated,
+                delay_time => SW(9 downto 5),  -- Delay time
+                feedback   => SW(4 downto 0),  -- Feedback amount
+                sample_out => sample_dly
+        );
+
+        inst_wah : wah
+        port map (
+                clk        => CLOCK_50,
+                sample_in  => sample_gated,
+                frequency  => SW(9 downto 5),  -- Center frequency
+                resonance  => SW(4 downto 0),  -- Resonance (Q)
+                sample_out => sample_wah
+        );
+
+        inst_phaser : phaser
+        port map (
+                clk        => CLOCK_50,
+                sample_in  => sample_gated,
+                rate       => SW(9 downto 5),  -- LFO rate
+                depth      => SW(4 downto 0),  -- Depth
+                sample_out => sample_phs
+        );
+
+        inst_reverb : reverb
+        port map (
+                clk        => CLOCK_50,
+                sample_in  => sample_gated,
+                room_size  => SW(9 downto 5),  -- Room size
+                damping    => SW(4 downto 0),  -- Damping
+                sample_out => sample_rev
         );
 
 
