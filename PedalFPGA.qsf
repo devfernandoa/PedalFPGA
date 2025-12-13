@@ -62,7 +62,6 @@ set_global_assignment -name VHDL_FILE booster.vhd
 set_global_assignment -name VHDL_FILE au_setup.vhd
 set_global_assignment -name VHDL_FILE au_out.vhd
 set_global_assignment -name VHDL_FILE au_in.vhd
-set_global_assignment -name VHDL_FILE AD7928_cyclic.vhd
 set_location_assignment PIN_AA16 -to CLOCK2_50
 set_location_assignment PIN_Y26 -to CLOCK3_50
 set_location_assignment PIN_K14 -to CLOCK4_50

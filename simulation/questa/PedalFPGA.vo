@@ -17,7 +17,7 @@
 // PROGRAM "Quartus Prime"
 // VERSION "Version 24.1std.0 Build 1077 03/04/2025 SC Lite Edition"
 
-// DATE "12/12/2025 23:54:40"
+// DATE "12/13/2025 00:09:54"
 
 // 
 // Device: Altera 5CSXFC6D6F31C6 Package FBGA896
@@ -61,7 +61,7 @@ input 	AUD_DACLRCK;
 input 	AUD_ADCDAT;
 output 	AUD_DACDAT;
 output 	FPGA_I2C_SCLK;
-inout 	FPGA_I2C_SDAT;
+output 	FPGA_I2C_SDAT;
 input 	[9:0] SW;
 output 	[9:0] LEDR;
 output 	ADC_SCLK;
