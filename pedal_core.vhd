@@ -3,9 +3,13 @@ use ieee.std_logic_1164.all;
 USE ieee.NUMERIC_STD.all;
 -- use ieee.std_logic_signed.all;
 
-entity testaudio_DE10SoC is 
+-- Audio path: codec -> DC blocker -> noise gate -> effects -> codec.
+-- Effect selection and knobs come from pedal_regs (written by the HPS), see pedal_regs.vhd.
+entity pedal_core is
  port(		CLOCK_50 	:  in  std_logic;
-		KEY 		:  in  std_logic_vector(3 downto 0);
+		--====CONTROL (pedal_regs)====--
+		chain 		:  in  std_logic_vector(31 downto 0);
+		params 		:  in  std_logic_vector(79 downto 0);
 		--====AUDIO====--
 		AUD_XCK 	:  out std_logic;
 		AUD_BCLK 	:  in  std_logic;
@@ -15,13 +19,7 @@ entity testaudio_DE10SoC is
 		AUD_DACDAT 	:  out std_logic;
 		FPGA_I2C_SCLK 	:  out std_logic;
 		FPGA_I2C_SDAT 	:  inout  std_logic;
-		--====ADC====--
-		SW 		: in  std_logic_vector(9 downto 0); -- canal a visulizar en LEDR
 		LEDR 		: out  std_logic_vector(9 downto 0);
-		ADC_SCLK  	: out std_logic;
-		ADC_CS_N  	: out std_logic;
-		ADC_DOUT  	: in  std_logic;
-		ADC_DIN	 	: out std_logic;
 		--====HEXADECIMAL====--
 		HEX0 : OUT STD_LOGIC_VECTOR(0 TO 6);
 		HEX1 : OUT STD_LOGIC_VECTOR(0 TO 6);
@@ -29,9 +27,9 @@ entity testaudio_DE10SoC is
 		HEX3 : OUT STD_LOGIC_VECTOR(0 TO 6);
 		HEX4 : OUT STD_LOGIC_VECTOR(0 TO 6);
 		HEX5 : OUT STD_LOGIC_VECTOR(0 TO 6)	);
-end testaudio_DE10SoC;
+end pedal_core;
 
-architecture a of testaudio_DE10SoC is 
+architecture a of pedal_core is 
 
 	component au_setup
 	 generic	(
@@ -181,14 +179,30 @@ architecture a of testaudio_DE10SoC is
 	signal multiplier : std_logic_vector(15 downto 0);
 	signal pot_distor : std_logic_vector(15 downto 0);
     signal dist_gain  : std_logic_vector(15 downto 0);
+	signal od_thresh  : std_logic_vector(15 downto 0);
+    signal od_gain    : std_logic_vector(15 downto 0);
     
 	--TREMOLO FX SIGNALS
 	signal velocidad, ataque: std_logic_vector(15 downto 0);
 	signal onda	  	: std_logic_vector(1 downto 0);
     
-    -- Effect State (8 effects: 0-7)
-    signal current_effect : integer range 0 to 7 := 0;
-    signal key_prev : std_logic_vector(3 downto 0) := "1111";
+    -- Effect ids (same as pedal_regs.vhd); PARAM[e]: bits 9..5 = knob A, 4..0 = knob B
+    constant FX_BOOST : integer := 0;
+    constant FX_DIST  : integer := 1;
+    constant FX_OD    : integer := 2;
+    constant FX_TREM  : integer := 3;
+    constant FX_DLY   : integer := 4;
+    constant FX_WAH   : integer := 5;
+    constant FX_PHS   : integer := 6;
+    constant FX_REV   : integer := 7;
+    type param_array is array (0 to 7) of std_logic_vector(9 downto 0);
+    -- params_s only changes on in_ready, like sample_gated (see PedalFPGA.sdc multicycle paths)
+    signal params_s : std_logic_vector(79 downto 0) := (others => '0');
+    signal p        : param_array;
+    signal p_cur    : std_logic_vector(9 downto 0);
+
+    -- Selected effect = chain slot 0 (0..7, anything else = bypass)
+    signal current_effect : integer range 0 to 15 := 15;
 
     function seg7(i : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
@@ -255,101 +269,54 @@ begin
         end if;
     end process;
 
-    -- Effect Switching Logic
-    -- KEY0: Cycle through effects 0-3 (Bank A) or 4-7 (Bank B)
-    -- KEY1: Toggle between Bank A (0-3) and Bank B (4-7)
-    -- Within each bank:
-    --   Effect 0/4: Booster/Delay
-    --   Effect 1/5: Distortion/Wah  
-    --   Effect 2/6: Overdrive/Phaser
-    --   Effect 3/7: Tremolo/Reverb
+    -- Register the HPS-written knobs once per sample, so they change in step with the audio
     process(CLOCK_50)
-        variable bank : integer range 0 to 1 := 0;
-        variable effect_in_bank : integer range 0 to 3 := 0;
     begin
         if rising_edge(CLOCK_50) then
-            -- Detect falling edge (button press)
-            if KEY(0) = '0' and key_prev(0) = '1' then
-                -- Cycle to next effect within current bank
-                if current_effect < 4 then
-                    if current_effect = 3 then
-                        current_effect <= 0;
-                    else
-                        current_effect <= current_effect + 1;
-                    end if;
-                else
-                    if current_effect = 7 then
-                        current_effect <= 4;
-                    else
-                        current_effect <= current_effect + 1;
-                    end if;
-                end if;
+            if in_ready = '1' then
+                params_s <= params;
             end if;
-            
-            if KEY(1) = '0' and key_prev(1) = '1' then
-                -- Toggle between banks (0-3 <-> 4-7)
-                if current_effect < 4 then
-                    current_effect <= current_effect + 4;
-                else
-                    current_effect <= current_effect - 4;
-                end if;
-            end if;
-            
-            if KEY(2) = '0' and key_prev(2) = '1' then
-                -- Previous effect in bank
-                if current_effect < 4 then
-                    if current_effect = 0 then
-                        current_effect <= 3;
-                    else
-                        current_effect <= current_effect - 1;
-                    end if;
-                else
-                    if current_effect = 4 then
-                        current_effect <= 7;
-                    else
-                        current_effect <= current_effect - 1;
-                    end if;
-                end if;
-            end if;
-            
-            if KEY(3) = '0' and key_prev(3) = '1' then
-                -- Reset to effect 0
-                current_effect <= 0;
-            end if;
-            
-            key_prev <= KEY;
         end if;
     end process;
+
+    gen_p: for e in 0 to 7 generate
+        p(e) <= params_s(10*e+9 downto 10*e);
+    end generate;
+
+    current_effect <= to_integer(unsigned(chain(3 downto 0)));
+    p_cur <= p(current_effect mod 8) when current_effect < 8 else (others => '0');
 
     -- Parameter Calculation Process
     process(CLOCK_50)
     begin
         if rising_edge(CLOCK_50) then
-            -- 1. BOOSTER GAIN (SW 9-5 Coarse, SW 4-0 Fine)
+            -- 1. BOOSTER GAIN (knob A/B)
             -- Base 256 (1x).
-            -- SW 9-5: 0 to 31 * 900 = 27900.
-            -- SW 4-0: 0 to 31 * 100 = 3100.
+            -- Knob A: 0 to 31 * 900 = 27900.
+            -- Knob B: 0 to 31 * 100 = 3100.
             -- Max Total: 256 + 27900 + 3100 = 31256 (Safe < 32767).
             multiplier <= std_logic_vector(to_unsigned(256, 16) 
-                                         + resize(unsigned(SW(9 downto 5)) * to_unsigned(900, 11), 16)
-                                         + resize(unsigned(SW(4 downto 0)) * to_unsigned(100, 11), 16));
+                                         + resize(unsigned(p(FX_BOOST)(9 downto 5)) * to_unsigned(900, 11), 16)
+                                         + resize(unsigned(p(FX_BOOST)(4 downto 0)) * to_unsigned(100, 11), 16));
 
-            -- 2. DISTORTION/OVERDRIVE DRIVE (SW 9-5)
-            -- Threshold: High SW = Low Threshold (More Dist).
+            -- 2. DISTORTION/OVERDRIVE DRIVE (knob A/B)
+            -- Threshold: High knob A = Low Threshold (More Dist).
             -- Range: 3000 down to ~55.
-            pot_distor <= std_logic_vector(to_unsigned(3000, 16) - resize(unsigned(SW(9 downto 5)) * to_unsigned(95, 11), 16));
+            pot_distor <= std_logic_vector(to_unsigned(3000, 16) - resize(unsigned(p(FX_DIST)(9 downto 5)) * to_unsigned(95, 11), 16));
+            od_thresh  <= std_logic_vector(to_unsigned(3000, 16) - resize(unsigned(p(FX_OD)(9 downto 5)) * to_unsigned(95, 11), 16));
 
-            -- 3. DISTORTION/OVERDRIVE LEVEL (SW 4-0)
-            -- Gain: Base 256 (1x) + SW * 900. 
+            -- 3. DISTORTION/OVERDRIVE LEVEL (knob A/B)
+            -- Gain: Base 256 (1x) + knob B * 900. 
             -- Max: 256 + 31*900 = 28156 (Safe < 32767).
             -- Prevents sign flip in booster component.
-            dist_gain <= std_logic_vector(to_unsigned(256, 16) + resize(unsigned(SW(4 downto 0)) * to_unsigned(900, 11), 16));
+            dist_gain <= std_logic_vector(to_unsigned(256, 16) + resize(unsigned(p(FX_DIST)(4 downto 0)) * to_unsigned(900, 11), 16));
+            od_gain   <= std_logic_vector(to_unsigned(256, 16) + resize(unsigned(p(FX_OD)(4 downto 0)) * to_unsigned(900, 11), 16));
 
-            -- 4. TREMOLO RATE (SW 9-5)
-            velocidad <= std_logic_vector(to_unsigned(2400, 16) + resize(unsigned(SW(9 downto 5)) * to_unsigned(512, 11), 16));
+            -- 4. TREMOLO RATE (knob A/B)
+            velocidad <= std_logic_vector(to_unsigned(2400, 16) + resize(unsigned(p(FX_TREM)(9 downto 5)) * to_unsigned(512, 11), 16));
 
-            -- 5. TREMOLO DEPTH (SW 4-0)
-            ataque <= std_logic_vector(resize(unsigned(SW(4 downto 0)) * to_unsigned(1024, 11), 16));
+            -- 5. TREMOLO DEPTH (knob A/B)
+            ataque <= std_logic_vector(resize(unsigned(p(FX_TREM)(4 downto 0)) * to_unsigned(1024, 11), 16));
         end if;
     end process;
     
@@ -391,7 +358,7 @@ begin
 -------------Varlores potenciometros-------------
 -- Removed old concurrent assignments
 -------------DISTOR-------------
-		LEDR <= SW;
+		LEDR <= p_cur;
 		
         -- Effect Display (Active Low: 0=ON, 1=OFF)
         -- Bank A: bO=Booster, d1=Distortion, Od=Overdrive, tr=Tremolo
@@ -403,7 +370,8 @@ begin
                 "1000010" when current_effect = 4 else -- d (Delay)
                 "1000001" when current_effect = 5 else -- U (Wah)
                 "0001100" when current_effect = 6 else -- P (Phaser)
-                "1111010";                             -- r (Reverb)
+                "1111010" when current_effect = 7 else -- r (Reverb)
+                "1111110";                             -- - (bypass)
 
         HEX4 <= "0000001" when current_effect = 0 else -- O (bO)
                 "1001111" when current_effect = 1 else -- 1 (d1)
@@ -412,14 +380,15 @@ begin
                 "1110001" when current_effect = 4 else -- L (dL)
                 "0001000" when current_effect = 5 else -- A (UA)
                 "0001001" when current_effect = 6 else -- H (PH)
-                "0110000";                             -- E (rE)
+                "0110000" when current_effect = 7 else -- E (rE)
+                "1111110";                             -- - (bypass)
 
-		HEX3<=seg7("000" & SW(9));
-		HEX2<=seg7(SW(8 downto 5));
-		HEX1<=seg7("000" & SW(4));
-		HEX0<=seg7(SW(3 downto 0));
+		HEX3<=seg7("000" & p_cur(9));
+		HEX2<=seg7(p_cur(8 downto 5));
+		HEX1<=seg7("000" & p_cur(4));
+		HEX0<=seg7(p_cur(3 downto 0));
         
-        -- Multiplexer (8 effects)
+        -- Multiplexer (8 effects + bypass)
         sample_out <= sample_boost when current_effect = 0 else
                       sample_dis   when current_effect = 1 else
                       sample_od    when current_effect = 2 else
@@ -427,12 +396,13 @@ begin
                       sample_dly   when current_effect = 4 else
                       sample_wah   when current_effect = 5 else
                       sample_phs   when current_effect = 6 else
-                      sample_rev;
+                      sample_rev   when current_effect = 7 else
+                      sample_gated;  -- bypass
 
         inst_booster : booster
         port map (	
                 sample_in => sample_gated,
-                multiplier => multiplier, -- Uses SW 9-5 (1x to 16x)
+                multiplier => multiplier, -- knob A coarse, knob B fine
                 sample_out => sample_boost 	
         );
 
@@ -447,8 +417,8 @@ begin
         inst_overdrive : overdrive
         port map (	
                 sample_in => sample_gated,
-                gain => dist_gain,
-                dist_pos => pot_distor,
+                gain => od_gain,
+                dist_pos => od_thresh,
                 sample_out => sample_od 	
         );
 
@@ -459,8 +429,8 @@ begin
                 LD_Sample  => in_ready,
                 clk 	   => CLOCK_50,
                 cl 	   => reset,
-                rate 	   => velocidad, -- Rate: SW 9-5
-                atack 	   => ataque,    -- Depth: SW 4-0
+                rate 	   => velocidad, -- Rate: knob A
+                atack 	   => ataque,    -- Depth: knob B
                 wave 	   => onda       -- Triangle
         );
 
@@ -469,8 +439,8 @@ begin
                 clk        => CLOCK_50,
                 ce         => in_ready,
                 sample_in  => sample_gated,
-                delay_time => SW(9 downto 5),  -- Delay time
-                feedback   => SW(4 downto 0),  -- Feedback amount
+                delay_time => p(FX_DLY)(9 downto 5),  -- Delay time
+                feedback   => p(FX_DLY)(4 downto 0),  -- Feedback amount
                 sample_out => sample_dly
         );
 
@@ -479,8 +449,8 @@ begin
                 clk        => CLOCK_50,
                 ce         => in_ready,
                 sample_in  => sample_gated,
-                frequency  => SW(9 downto 5),  -- Center frequency
-                resonance  => SW(4 downto 0),  -- Resonance (Q)
+                frequency  => p(FX_WAH)(9 downto 5),  -- Center frequency
+                resonance  => p(FX_WAH)(4 downto 0),  -- Resonance (Q)
                 sample_out => sample_wah
         );
 
@@ -489,8 +459,8 @@ begin
                 clk        => CLOCK_50,
                 ce         => in_ready,
                 sample_in  => sample_gated,
-                rate       => SW(9 downto 5),  -- LFO rate
-                depth      => SW(4 downto 0),  -- Depth
+                rate       => p(FX_PHS)(9 downto 5),  -- LFO rate
+                depth      => p(FX_PHS)(4 downto 0),  -- Depth
                 sample_out => sample_phs
         );
 
@@ -499,8 +469,8 @@ begin
                 clk        => CLOCK_50,
                 ce         => in_ready,
                 sample_in  => sample_gated,
-                room_size  => SW(9 downto 5),  -- Room size
-                damping    => SW(4 downto 0),  -- Damping
+                room_size  => p(FX_REV)(9 downto 5),  -- Room size
+                damping    => p(FX_REV)(4 downto 0),  -- Damping
                 sample_out => sample_rev
         );
 
