@@ -165,15 +165,9 @@ architecture a of pedal_core is
     constant GATE_THRESH : integer := 10; -- Lowered threshold
     signal gate_timer : integer range 0 to 24000 := 0;
 
-	signal sample_boost : std_logic_vector(15 downto 0);
-	signal sample_od : std_logic_vector(15 downto 0);
-	signal sample_dis : std_logic_vector(15 downto 0);
-	signal sample_trm : std_logic_vector(15 downto 0);
-	signal sample_dly : std_logic_vector(15 downto 0);
-	signal sample_wah : std_logic_vector(15 downto 0);
-	signal sample_phs : std_logic_vector(15 downto 0);
-	signal sample_rev : std_logic_vector(15 downto 0);
-	signal sample_out : std_logic_vector(15 downto 0);
+	type sample_array is array (0 to 7) of std_logic_vector(15 downto 0);
+	signal fx_out     : sample_array;                    -- output of each effect, indexed by id
+	signal sample_out : std_logic_vector(15 downto 0) := (others => '0');
 	
     -- Control Signals
 	signal multiplier : std_logic_vector(15 downto 0);
@@ -196,13 +190,24 @@ architecture a of pedal_core is
     constant FX_PHS   : integer := 6;
     constant FX_REV   : integer := 7;
     type param_array is array (0 to 7) of std_logic_vector(9 downto 0);
-    -- params_s only changes on in_ready, like sample_gated (see PedalFPGA.sdc multicycle paths)
+    -- params_s only changes on in_ready, a few cycles before the chain starts (see PedalFPGA.sdc multicycle paths)
     signal params_s : std_logic_vector(79 downto 0) := (others => '0');
     signal p        : param_array;
     signal p_cur    : std_logic_vector(9 downto 0);
 
-    -- Selected effect = chain slot 0 (0..7, anything else = bypass)
+    -- First effect in the chain (shown on HEX5/4 + its knobs on HEX3-0/LEDR); >= 8 = empty
     signal current_effect : integer range 0 to 15 := 15;
+
+    -- Effect chain (see the chain process)
+    constant SLOT_WAIT : integer := 3;  -- chain_x is stable SLOT_WAIT+2 cycles before ce (sdc multicycle = 4)
+    type chain_state_t is (CH_IDLE, CH_WAIT, CH_FIRE, CH_LATCH);
+    signal ch_state   : chain_state_t := CH_IDLE;
+    signal chain_x    : std_logic_vector(15 downto 0) := (others => '0');  -- sample travelling down the chain
+    signal chain_sh   : std_logic_vector(31 downto 0) := (others => '1');  -- CHAIN snapshot, current slot in bits 3..0
+    signal slot       : integer range 0 to 8 := 0;
+    signal wait_cnt   : integer range 0 to SLOT_WAIT := 0;
+    signal fx_ce      : std_logic_vector(7 downto 0) := (others => '0');
+    signal in_ready_d : std_logic := '0';
 
     function seg7(i : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
@@ -388,44 +393,79 @@ begin
 		HEX1<=seg7("000" & p_cur(4));
 		HEX0<=seg7(p_cur(3 downto 0));
         
-        -- Multiplexer (8 effects + bypass)
-        sample_out <= sample_boost when current_effect = 0 else
-                      sample_dis   when current_effect = 1 else
-                      sample_od    when current_effect = 2 else
-                      sample_trm   when current_effect = 3 else
-                      sample_dly   when current_effect = 4 else
-                      sample_wah   when current_effect = 5 else
-                      sample_phs   when current_effect = 6 else
-                      sample_rev   when current_effect = 7 else
-                      sample_gated;  -- bypass
+        -- Effect chain: once per sample, run chain_x through CHAIN slots 0..7 in order.
+        -- Per slot: hold chain_x for SLOT_WAIT+1 cycles, pulse that effect's ce for one cycle,
+        -- then latch the effect's output (registered, or combinational for booster/distortion/
+        -- overdrive/tremolo) back into chain_x. Empty slots (id >= 8) are skipped.
+        -- Each effect exists once: an id repeated in CHAIN steps that effect twice per sample.
+        process(CLOCK_50)
+            variable fx : integer range 0 to 15;
+        begin
+            if rising_edge(CLOCK_50) then
+                fx := to_integer(unsigned(chain_sh(3 downto 0)));
+                fx_ce <= (others => '0');
+                in_ready_d <= in_ready;
+                case ch_state is
+                    when CH_IDLE =>
+                        if in_ready_d = '1' then     -- sample_gated was updated by in_ready
+                            chain_x  <= sample_gated;
+                            chain_sh <= chain;
+                            slot     <= 0;
+                            wait_cnt <= 0;
+                            ch_state <= CH_WAIT;
+                        end if;
+                    when CH_WAIT =>
+                        if slot = 8 then
+                            sample_out <= chain_x;
+                            ch_state   <= CH_IDLE;
+                        elsif fx >= 8 then           -- empty slot
+                            chain_sh <= x"F" & chain_sh(31 downto 4);
+                            slot     <= slot + 1;
+                        elsif wait_cnt = SLOT_WAIT then
+                            fx_ce(fx mod 8) <= '1';
+                            wait_cnt <= 0;
+                            ch_state <= CH_FIRE;
+                        else
+                            wait_cnt <= wait_cnt + 1;
+                        end if;
+                    when CH_FIRE =>                  -- ce is high now; the effect registers update at the end of this cycle
+                        ch_state <= CH_LATCH;
+                    when CH_LATCH =>
+                        chain_x  <= fx_out(fx mod 8);
+                        chain_sh <= x"F" & chain_sh(31 downto 4);
+                        slot     <= slot + 1;
+                        ch_state <= CH_WAIT;
+                end case;
+            end if;
+        end process;
 
         inst_booster : booster
         port map (	
-                sample_in => sample_gated,
+                sample_in => chain_x,
                 multiplier => multiplier, -- knob A coarse, knob B fine
-                sample_out => sample_boost 	
+                sample_out => fx_out(FX_BOOST) 	
         );
 
         inst_distortion : distortion
         port map (	
-                sample_in => sample_gated,
+                sample_in => chain_x,
                 gain => dist_gain,
                 dist_pos => pot_distor,
-                sample_out => sample_dis 	
+                sample_out => fx_out(FX_DIST) 	
         );
 
         inst_overdrive : overdrive
         port map (	
-                sample_in => sample_gated,
+                sample_in => chain_x,
                 gain => od_gain,
                 dist_pos => od_thresh,
-                sample_out => sample_od 	
+                sample_out => fx_out(FX_OD) 	
         );
 
         inst_tremolo : tremolo
         port map (
-                sample_in  => sample_gated,
-                sample_out => sample_trm,
+                sample_in  => chain_x,
+                sample_out => fx_out(FX_TREM),
                 LD_Sample  => in_ready,
                 clk 	   => CLOCK_50,
                 cl 	   => reset,
@@ -437,41 +477,41 @@ begin
         inst_delay : delay
         port map (
                 clk        => CLOCK_50,
-                ce         => in_ready,
-                sample_in  => sample_gated,
+                ce         => fx_ce(FX_DLY),
+                sample_in  => chain_x,
                 delay_time => p(FX_DLY)(9 downto 5),  -- Delay time
                 feedback   => p(FX_DLY)(4 downto 0),  -- Feedback amount
-                sample_out => sample_dly
+                sample_out => fx_out(FX_DLY)
         );
 
         inst_wah : wah
         port map (
                 clk        => CLOCK_50,
-                ce         => in_ready,
-                sample_in  => sample_gated,
+                ce         => fx_ce(FX_WAH),
+                sample_in  => chain_x,
                 frequency  => p(FX_WAH)(9 downto 5),  -- Center frequency
                 resonance  => p(FX_WAH)(4 downto 0),  -- Resonance (Q)
-                sample_out => sample_wah
+                sample_out => fx_out(FX_WAH)
         );
 
         inst_phaser : phaser
         port map (
                 clk        => CLOCK_50,
-                ce         => in_ready,
-                sample_in  => sample_gated,
+                ce         => fx_ce(FX_PHS),
+                sample_in  => chain_x,
                 rate       => p(FX_PHS)(9 downto 5),  -- LFO rate
                 depth      => p(FX_PHS)(4 downto 0),  -- Depth
-                sample_out => sample_phs
+                sample_out => fx_out(FX_PHS)
         );
 
         inst_reverb : reverb
         port map (
                 clk        => CLOCK_50,
-                ce         => in_ready,
-                sample_in  => sample_gated,
+                ce         => fx_ce(FX_REV),
+                sample_in  => chain_x,
                 room_size  => p(FX_REV)(9 downto 5),  -- Room size
                 damping    => p(FX_REV)(4 downto 0),  -- Damping
-                sample_out => sample_rev
+                sample_out => fx_out(FX_REV)
         );
 
 

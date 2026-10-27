@@ -6,7 +6,8 @@
  *
  *   pedalctl id                       read ID (expect 0x50ED0001)
  *   pedalctl dump                     print every register
- *   pedalctl chain <fx> [<fx> ...]    set the chain, up to 8 effects (names or 0..7)
+ *   pedalctl chain <fx> [<fx> ...]    set the chain: audio goes through the effects in this order
+ *                                     (up to 8, each at most once; names or 0..7)
  *   pedalctl chain none               empty chain (clean signal)
  *   pedalctl param <fx> <a> <b>       set knob A and knob B (0..31) of an effect
  */
@@ -104,10 +105,17 @@ int main(int argc, char **argv)
             return usage();
         uint32_t chain = 0xFFFFFFFFu;
         if (!(argc == 3 && strcmp(argv[2], "none") == 0)) {
+            unsigned used = 0;
             for (int s = 0; s < argc - 2; s++) {
                 int fx = parse_fx(argv[2 + s]);
                 if (fx < 0)
                     return usage();
+                /* each effect exists once in the FPGA; twice in the chain would step it twice per sample */
+                if (used & (1u << fx)) {
+                    fprintf(stderr, "%s is already in the chain\n", fx_names[fx]);
+                    return 2;
+                }
+                used |= 1u << fx;
                 chain &= ~(0xFu << (4 * s));
                 chain |= (uint32_t)fx << (4 * s);
             }

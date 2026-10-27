@@ -2,12 +2,12 @@ create_clock -name CLOCK_50 -period 20 [get_ports CLOCK_50]
 derive_pll_clocks
 derive_clock_uncertainty
 
-# Effects with a per-sample clock enable (ce = in_ready, ~1 pulse every 1041 clocks):
-# register-to-register paths inside them, and from their inputs (sample_gated and the
-# knob register params_s, which also only change on in_ready), get 4 cycles.
-# ponytail: 4 is way below 1041, raise if needed.
+# Effects with a clock enable (ce = fx_ce, pulsed by the chain state machine at most once
+# per slot, slots are >= SLOT_WAIT+3 = 6 cycles apart): register-to-register paths inside
+# them, and from their inputs (chain_x, held SLOT_WAIT+2 = 5 cycles before ce, and the
+# knob register params_s, which only changes on in_ready) get 4 cycles.
 foreach inst {inst_delay inst_wah inst_phaser inst_reverb} {
-    set src [get_registers "*|${inst}|* *|sample_gated* *|params_s*"]
+    set src [get_registers "*|${inst}|* *|chain_x* *|params_s*"]
     set dst [get_registers "*|${inst}|*"]
     set_multicycle_path -setup 4 -from $src -to $dst
     set_multicycle_path -hold  3 -from $src -to $dst

@@ -1,6 +1,7 @@
 -- Avalon-MM register bank written by the HPS over the lightweight bridge (0xFF200000).
 --   0x00 ID        (RO) 0x50ED0001
---   0x04 CHAIN     8 slots x 4 bits, slot 0 = bits 3..0; value = effect id, 0xF = empty
+--   0x04 CHAIN     8 slots x 4 bits, slot 0 = bits 3..0; value = effect id, 0xF = empty.
+--                  Audio runs through slots 0..7 in order; an id used twice is stepped twice per sample.
 --   0x08+4*e PARAM[e]  bits 9..5 = knob A, bits 4..0 = knob B  (e = 0..7)
 -- Effect ids: 0 booster, 1 distortion, 2 overdrive, 3 tremolo, 4 delay, 5 wah, 6 phaser, 7 reverb
 library ieee;
