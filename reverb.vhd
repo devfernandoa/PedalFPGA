@@ -2,10 +2,12 @@
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
+use work.sat_pkg.all;
 
 entity reverb is
     port (
         clk         : in  std_logic;
+        ce          : in  std_logic;  -- 1 pulse por amostra (48 kHz)
         sample_in   : in  std_logic_vector(15 downto 0);
         room_size   : in  std_logic_vector(4 downto 0);  -- SW[9:5] - tamanho da sala
         damping     : in  std_logic_vector(4 downto 0);  -- SW[4:0] - absorção
@@ -70,97 +72,93 @@ begin
         variable filt_diff  : signed(31 downto 0);
     begin
         if rising_edge(clk) then
-            -- Calcular coeficientes baseados nos controles
-            -- Room size -> feedback (0.7 a 0.95)
-            feedback_coef <= to_signed(22937 + to_integer(unsigned(room_size)) * 327, 16);
-            -- Damping -> filtro passa-baixa (0.1 a 0.7)
-            damp_coef <= to_signed(3276 + to_integer(unsigned(damping)) * 655, 16);
+            if ce = '1' then
+                -- Calcular coeficientes baseados nos controles
+                -- Room size -> feedback (0.7 a 0.95): 22937 + 31*264 = 31121 (< 32767, sem estourar)
+                feedback_coef <= to_signed(22937 + to_integer(unsigned(room_size)) * 264, 16);
+                -- Damping -> filtro passa-baixa (0.1 a 0.7)
+                damp_coef <= to_signed(3276 + to_integer(unsigned(damping)) * 655, 16);
             
-            -- === COMB FILTERS (paralelo) ===
+                -- === COMB FILTERS (paralelo) ===
             
-            -- Comb 1
-            comb1_out <= comb1_buf(comb1_ptr);
-            filt_diff := (comb1_out - comb1_filt) * damp_coef;
-            comb1_filt <= comb1_filt + filt_diff(30 downto 15);
-            fb_mult := comb1_filt * feedback_coef;
-            comb1_buf(comb1_ptr) <= sample_in_s + fb_mult(30 downto 15);
-            if comb1_ptr = COMB1_SIZE - 1 then
-                comb1_ptr <= 0;
-            else
-                comb1_ptr <= comb1_ptr + 1;
-            end if;
+                -- Comb 1
+                comb1_out <= comb1_buf(comb1_ptr);
+                filt_diff := (comb1_out - comb1_filt) * damp_coef;
+                comb1_filt <= comb1_filt + filt_diff(30 downto 15);
+                fb_mult := comb1_filt * feedback_coef;
+                comb1_buf(comb1_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
+                if comb1_ptr = COMB1_SIZE - 1 then
+                    comb1_ptr <= 0;
+                else
+                    comb1_ptr <= comb1_ptr + 1;
+                end if;
             
-            -- Comb 2
-            comb2_out <= comb2_buf(comb2_ptr);
-            filt_diff := (comb2_out - comb2_filt) * damp_coef;
-            comb2_filt <= comb2_filt + filt_diff(30 downto 15);
-            fb_mult := comb2_filt * feedback_coef;
-            comb2_buf(comb2_ptr) <= sample_in_s + fb_mult(30 downto 15);
-            if comb2_ptr = COMB2_SIZE - 1 then
-                comb2_ptr <= 0;
-            else
-                comb2_ptr <= comb2_ptr + 1;
-            end if;
+                -- Comb 2
+                comb2_out <= comb2_buf(comb2_ptr);
+                filt_diff := (comb2_out - comb2_filt) * damp_coef;
+                comb2_filt <= comb2_filt + filt_diff(30 downto 15);
+                fb_mult := comb2_filt * feedback_coef;
+                comb2_buf(comb2_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
+                if comb2_ptr = COMB2_SIZE - 1 then
+                    comb2_ptr <= 0;
+                else
+                    comb2_ptr <= comb2_ptr + 1;
+                end if;
             
-            -- Comb 3
-            comb3_out <= comb3_buf(comb3_ptr);
-            filt_diff := (comb3_out - comb3_filt) * damp_coef;
-            comb3_filt <= comb3_filt + filt_diff(30 downto 15);
-            fb_mult := comb3_filt * feedback_coef;
-            comb3_buf(comb3_ptr) <= sample_in_s + fb_mult(30 downto 15);
-            if comb3_ptr = COMB3_SIZE - 1 then
-                comb3_ptr <= 0;
-            else
-                comb3_ptr <= comb3_ptr + 1;
-            end if;
+                -- Comb 3
+                comb3_out <= comb3_buf(comb3_ptr);
+                filt_diff := (comb3_out - comb3_filt) * damp_coef;
+                comb3_filt <= comb3_filt + filt_diff(30 downto 15);
+                fb_mult := comb3_filt * feedback_coef;
+                comb3_buf(comb3_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
+                if comb3_ptr = COMB3_SIZE - 1 then
+                    comb3_ptr <= 0;
+                else
+                    comb3_ptr <= comb3_ptr + 1;
+                end if;
             
-            -- Comb 4
-            comb4_out <= comb4_buf(comb4_ptr);
-            filt_diff := (comb4_out - comb4_filt) * damp_coef;
-            comb4_filt <= comb4_filt + filt_diff(30 downto 15);
-            fb_mult := comb4_filt * feedback_coef;
-            comb4_buf(comb4_ptr) <= sample_in_s + fb_mult(30 downto 15);
-            if comb4_ptr = COMB4_SIZE - 1 then
-                comb4_ptr <= 0;
-            else
-                comb4_ptr <= comb4_ptr + 1;
-            end if;
+                -- Comb 4
+                comb4_out <= comb4_buf(comb4_ptr);
+                filt_diff := (comb4_out - comb4_filt) * damp_coef;
+                comb4_filt <= comb4_filt + filt_diff(30 downto 15);
+                fb_mult := comb4_filt * feedback_coef;
+                comb4_buf(comb4_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
+                if comb4_ptr = COMB4_SIZE - 1 then
+                    comb4_ptr <= 0;
+                else
+                    comb4_ptr <= comb4_ptr + 1;
+                end if;
             
-            -- Somar saídas dos comb filters
-            comb_sum := resize(comb1_out, 32) + resize(comb2_out, 32) + 
-                        resize(comb3_out, 32) + resize(comb4_out, 32);
+                -- Somar saídas dos comb filters
+                comb_sum := resize(comb1_out, 32) + resize(comb2_out, 32) + 
+                            resize(comb3_out, 32) + resize(comb4_out, 32);
             
-            -- === ALL-PASS FILTERS (série) ===
+                -- === ALL-PASS FILTERS (série) ===
             
-            -- All-pass 1
-            ap_temp := comb_sum / 4;
-            ap1_out <= ap1_buf(ap1_ptr) + ap_temp(15 downto 0);
-            ap1_buf(ap1_ptr) <= ap_temp(15 downto 0) - (ap1_out / 2);
-            if ap1_ptr = AP1_SIZE - 1 then
-                ap1_ptr <= 0;
-            else
-                ap1_ptr <= ap1_ptr + 1;
-            end if;
+                -- All-pass 1
+                ap_temp := comb_sum / 4;
+                ap1_out <= sat16(resize(ap1_buf(ap1_ptr), 17) + ap_temp(15 downto 0));
+                ap1_buf(ap1_ptr) <= sat16(resize(ap_temp(15 downto 0), 17) - (ap1_out / 2));
+                if ap1_ptr = AP1_SIZE - 1 then
+                    ap1_ptr <= 0;
+                else
+                    ap1_ptr <= ap1_ptr + 1;
+                end if;
             
-            -- All-pass 2
-            ap2_out <= ap2_buf(ap2_ptr) + ap1_out;
-            ap2_buf(ap2_ptr) <= ap1_out - (ap2_out / 2);
-            if ap2_ptr = AP2_SIZE - 1 then
-                ap2_ptr <= 0;
-            else
-                ap2_ptr <= ap2_ptr + 1;
-            end if;
+                -- All-pass 2
+                ap2_out <= sat16(resize(ap2_buf(ap2_ptr), 17) + ap1_out);
+                ap2_buf(ap2_ptr) <= sat16(resize(ap1_out, 17) - (ap2_out / 2));
+                if ap2_ptr = AP2_SIZE - 1 then
+                    ap2_ptr <= 0;
+                else
+                    ap2_ptr <= ap2_ptr + 1;
+                end if;
             
-            -- Mixar sinal seco com reverb (50/50)
-            mixed := shift_left(resize(sample_in_s, 32), 13) + shift_left(resize(ap2_out, 32), 13);
+                -- Mixar sinal seco com reverb (50/50)
+                mixed := shift_left(resize(sample_in_s, 32), 13) + shift_left(resize(ap2_out, 32), 13);
             
-            -- Saída com saturação
-            if mixed(31) = '0' and mixed(30 downto 15) > 32767 then
-                sample_out <= std_logic_vector(to_signed(32767, 16));
-            elsif mixed(31) = '1' and mixed(30 downto 15) < -32768 then
-                sample_out <= std_logic_vector(to_signed(-32768, 16));
-            else
-                sample_out <= std_logic_vector(mixed(30 downto 15));
+                -- Saída com saturação
+                sample_out <= std_logic_vector(sat16(shift_right(mixed, 15)));
             end if;
         end if;
     end process;

@@ -40,23 +40,18 @@ architecture a of overdrive is
 begin
 	dist_neg<= std_logic_vector(-signed(dist_pos)); --OJO CON ESTO!
 	boost: process(dist_pos, dist_neg, sample_in)
-        variable overdrive_val : signed(15 downto 0);
 	begin
-        -- Calculate overdrive value (1/4 of input) immediately
-        overdrive_val := signed(sample_in) / 4;
-
 		if (sample_in(15) = '1') then --resultado negativo
 			if (signed(sample_in(15 downto 0))<signed(dist_neg(15 downto 0))) then
-                -- Soft clipping: Threshold + (Input / 4)
-                -- Use variable to avoid latch and timing issues
-				signal_dist <= std_logic_vector(signed(dist_neg) + overdrive_val);
+                -- Soft clipping: Threshold + (Input - Threshold) / 4 (continuous at the threshold)
+				signal_dist <= std_logic_vector(signed(dist_neg) + (signed(sample_in) - signed(dist_neg)) / 4);
 			else
 				signal_dist <= sample_in;
 			end if;
 		else --resultado positivo
 			if (signed(sample_in(15 downto 0))>signed(dist_pos(15 downto 0))) then
-                -- Soft clipping: Threshold + (Input / 4)
-				signal_dist <= std_logic_vector(signed(dist_pos) + overdrive_val);
+                -- Soft clipping: Threshold + (Input - Threshold) / 4
+				signal_dist <= std_logic_vector(signed(dist_pos) + (signed(sample_in) - signed(dist_pos)) / 4);
 			else
 				signal_dist <= sample_in;
 			end if;

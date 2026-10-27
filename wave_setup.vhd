@@ -41,7 +41,7 @@ architecture a of wave_setup is
 	signal gain_counter	:std_logic_vector(15 downto 0); --Cociente de la division. Cada cuantos pasos hay que incrementar (sumar uno a) la ganancia.
 
 	--otras:
-	signal gain_cl_counter 	:std_logic_vector(7 downto 0);
+	signal gain_cl_counter 	:std_logic_vector(15 downto 0); -- mesmo tamanho de gain_counter (antes 8 bits truncava o cociente)
 	signal gain_aux		:std_logic_vector(15 downto 0);
 	signal diferencia	:unsigned(15 downto 0);
 	signal cociente		:unsigned(15 downto 0);
@@ -53,7 +53,7 @@ begin
 	begin
 		if(cl='1')then
 			gain_counter<=cero;
-			gain_cl_counter<="00000000";
+			gain_cl_counter<=(others => '0');
 		elsif(clk'event and clk='1') then
 			--Configuro cual va a ser el ataque
 			--32767/33
@@ -72,11 +72,11 @@ begin
 					if(counter(15 downto 0)=cero)then
 						gain_aux<=min_gain;
 					else
-						if(gain_cl_counter<gain_counter(7 downto 0)) then
+						if(gain_cl_counter<gain_counter) then
 							gain_cl_counter<=gain_cl_counter+'1';
 						else
 							gain_aux<=gain_aux+'1';
-							gain_cl_counter<="00000000";
+							gain_cl_counter<=(others => '0');
 						end if;
 					end if;
 					gain<=gain_aux;
@@ -89,18 +89,18 @@ begin
 					if(counter(15 downto 0)=cero)then
 						gain_aux<=min_gain;
 					elsif (counter(15 downto 0)<rate) then
-						if(gain_cl_counter<gain_counter(7 downto 0)) then
+						if(gain_cl_counter<gain_counter) then
 							gain_cl_counter<=gain_cl_counter+'1';
 						else
 							gain_aux<=gain_aux+'1';
-							gain_cl_counter<="00000000";
+							gain_cl_counter<=(others => '0');
 						end if;
 					else
-						if(gain_cl_counter<gain_counter(7 downto 0)) then
+						if(gain_cl_counter<gain_counter) then
 							gain_cl_counter<=gain_cl_counter+'1';
 						else
 							gain_aux<=gain_aux-'1';
-							gain_cl_counter<="00000000";
+							gain_cl_counter<=(others => '0');
 						end if;
 					end if;
 					gain<=gain_aux;

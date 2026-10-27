@@ -3,7 +3,7 @@
 ------------------------------------------------------------------------------------------------
 -- Etapa de amplificacion limpia.
 -- Dado un valor parametrizado multiplica la senal de entrada y retorna dicha senal amplificada.
--- Se descartan los 9 bits mas significativos despues del signo para controlar la ganancia.
+-- Ganancia = multiplier/256; el resultado satura en +-32767 en vez de desbordar.
 ------------------------------------------------------------------------------------------------
 -- Jose Angel Gumiel
 --  25/11/2016
@@ -31,10 +31,13 @@ architecture a of booster is
 		signal_unnormalized<=signed(sample_in)*signed(multiplier);
 		boost: process(signal_unnormalized)
 		begin
-			if (signal_unnormalized(31) = '1') then --resultado negativo
-				sample_out <= '1' & signal_unnormalized(22 downto 8);
+			-- Resultado = producto / 256. Si no cabe en 16 bits (bits 31..23 distintos), satura.
+			if signal_unnormalized(31 downto 23) = "000000000" or signal_unnormalized(31 downto 23) = "111111111" then
+				sample_out <= signal_unnormalized(23 downto 8);
+			elsif (signal_unnormalized(31) = '1') then --resultado negativo
+				sample_out <= x"8000";
 			else --resultado positivo
-				sample_out <= '0' & signal_unnormalized(22 downto 8);
+				sample_out <= x"7FFF";
 			end if;
 	end process;
 	

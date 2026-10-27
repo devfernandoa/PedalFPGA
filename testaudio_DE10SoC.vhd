@@ -111,6 +111,7 @@ architecture a of testaudio_DE10SoC is
 	component delay
 	 port (
 			clk         : in  std_logic;
+			ce          : in  std_logic;
 			sample_in   : in  std_logic_vector(15 downto 0);
 			delay_time  : in  std_logic_vector(4 downto 0);
 			feedback    : in  std_logic_vector(4 downto 0);
@@ -121,6 +122,7 @@ architecture a of testaudio_DE10SoC is
 	component wah
 	 port (
 			clk         : in  std_logic;
+			ce          : in  std_logic;
 			sample_in   : in  std_logic_vector(15 downto 0);
 			frequency   : in  std_logic_vector(4 downto 0);
 			resonance   : in  std_logic_vector(4 downto 0);
@@ -131,6 +133,7 @@ architecture a of testaudio_DE10SoC is
 	component phaser
 	 port (
 			clk         : in  std_logic;
+			ce          : in  std_logic;
 			sample_in   : in  std_logic_vector(15 downto 0);
 			rate        : in  std_logic_vector(4 downto 0);
 			depth       : in  std_logic_vector(4 downto 0);
@@ -141,6 +144,7 @@ architecture a of testaudio_DE10SoC is
 	component reverb
 	 port (
 			clk         : in  std_logic;
+			ce          : in  std_logic;
 			sample_in   : in  std_logic_vector(15 downto 0);
 			room_size   : in  std_logic_vector(4 downto 0);
 			damping     : in  std_logic_vector(4 downto 0);
@@ -463,6 +467,7 @@ begin
         inst_delay : delay
         port map (
                 clk        => CLOCK_50,
+                ce         => in_ready,
                 sample_in  => sample_gated,
                 delay_time => SW(9 downto 5),  -- Delay time
                 feedback   => SW(4 downto 0),  -- Feedback amount
@@ -472,6 +477,7 @@ begin
         inst_wah : wah
         port map (
                 clk        => CLOCK_50,
+                ce         => in_ready,
                 sample_in  => sample_gated,
                 frequency  => SW(9 downto 5),  -- Center frequency
                 resonance  => SW(4 downto 0),  -- Resonance (Q)
@@ -481,6 +487,7 @@ begin
         inst_phaser : phaser
         port map (
                 clk        => CLOCK_50,
+                ce         => in_ready,
                 sample_in  => sample_gated,
                 rate       => SW(9 downto 5),  -- LFO rate
                 depth      => SW(4 downto 0),  -- Depth
@@ -490,6 +497,7 @@ begin
         inst_reverb : reverb
         port map (
                 clk        => CLOCK_50,
+                ce         => in_ready,
                 sample_in  => sample_gated,
                 room_size  => SW(9 downto 5),  -- Room size
                 damping    => SW(4 downto 0),  -- Damping
