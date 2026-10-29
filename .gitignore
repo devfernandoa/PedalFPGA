@@ -78,3 +78,6 @@ hps_isw_handoff/
 soc_system.sopcinfo
 *.qdf
 *.rbf
+sim/out/
+__pycache__/
+!sw/web/*.html

@@ -1,4 +1,84 @@
--- filepath: reverb.vhd
+-- Reverb, Freeverb structure (Jezar, public domain): 8 parallel damped comb filters -> 4 all-passes.
+-- The comb input is scaled by 1/4 so the combs (gain up to 1/(1-0.97) ~ 33 at low frequencies)
+-- don't saturate on loud notes. Same integer math as reverb() in sim/fx_model.py.
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use work.sat_pkg.all;
+
+-- Comb: buf[n] = x + g * lowpass(buf[n - N]). The low-pass in the loop ("damping") makes the
+-- high frequencies die faster, like soft walls.
+entity reverb_comb is
+    generic (N : integer);
+    port (
+        clk, ce : in  std_logic;
+        x       : in  signed(15 downto 0);
+        g       : in  signed(15 downto 0);   -- feedback, Q15
+        damp    : in  signed(16 downto 0);   -- 1 - damping, Q15
+        y       : out signed(15 downto 0)    -- buf[n - N]
+    );
+end entity reverb_comb;
+
+architecture rtl of reverb_comb is
+    type buf_t is array (0 to N - 1) of signed(15 downto 0);
+    signal buf  : buf_t := (others => (others => '0'));
+    signal ptr  : integer range 0 to N - 1 := 0;
+    signal yr   : signed(15 downto 0) := (others => '0');
+    signal filt : signed(15 downto 0) := (others => '0');
+begin
+    y <= yr;
+    process(clk)
+        variable nxt : integer range 0 to N - 1;
+    begin
+        if rising_edge(clk) then
+            if ce = '1' then
+                if ptr = N - 1 then nxt := 0; else nxt := ptr + 1; end if;
+                buf(ptr) <= sat16(resize(x, 17) + shift_right(filt * g, 15));
+                yr <= buf(nxt);                  -- the next slot holds the sample written N samples ago
+                filt <= filt + resize(shift_right((resize(yr, 17) - resize(filt, 17)) * damp, 15), 16);
+                ptr <= nxt;
+            end if;
+        end if;
+    end process;
+end architecture rtl;
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use work.sat_pkg.all;
+
+-- Schroeder all-pass, g = 0.5: y = buf[n - N] - x, buf[n] = x + buf[n - N] / 2. Combinational x -> y,
+-- so the four all-passes run in the same sample.
+entity reverb_allpass is
+    generic (N : integer);
+    port (
+        clk, ce : in  std_logic;
+        x       : in  signed(15 downto 0);
+        y       : out signed(15 downto 0)
+    );
+end entity reverb_allpass;
+
+architecture rtl of reverb_allpass is
+    type buf_t is array (0 to N - 1) of signed(15 downto 0);
+    signal buf : buf_t := (others => (others => '0'));
+    signal ptr : integer range 0 to N - 1 := 0;
+    signal bo  : signed(15 downto 0) := (others => '0');
+begin
+    y <= sat16(resize(bo, 17) - resize(x, 17));
+    process(clk)
+        variable nxt : integer range 0 to N - 1;
+    begin
+        if rising_edge(clk) then
+            if ce = '1' then
+                if ptr = N - 1 then nxt := 0; else nxt := ptr + 1; end if;
+                buf(ptr) <= sat16(resize(x, 17) + shift_right(bo, 1));
+                bo <= buf(nxt);
+                ptr <= nxt;
+            end if;
+        end if;
+    end process;
+end architecture rtl;
+
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -7,160 +87,58 @@ use work.sat_pkg.all;
 entity reverb is
     port (
         clk         : in  std_logic;
-        ce          : in  std_logic;  -- 1 pulse por amostra (48 kHz)
+        ce          : in  std_logic;                     -- 1 pulse per sample
         sample_in   : in  std_logic_vector(15 downto 0);
-        room_size   : in  std_logic_vector(4 downto 0);  -- SW[9:5] - tamanho da sala
-        damping     : in  std_logic_vector(4 downto 0);  -- SW[4:0] - absorção
+        room_size   : in  std_logic_vector(4 downto 0);  -- knob A: comb feedback 0.70 .. 0.97 (decay time)
+        damping     : in  std_logic_vector(4 downto 0);  -- knob B: 0.05 .. 0.75, higher = darker tail
         sample_out  : out std_logic_vector(15 downto 0)
     );
 end entity reverb;
 
-architecture a of reverb is
-    -- 4 Comb filters em paralelo (delays primos para evitar ressonância)
-    constant COMB1_SIZE : integer := 1557;
-    constant COMB2_SIZE : integer := 1617;
-    constant COMB3_SIZE : integer := 1491;
-    constant COMB4_SIZE : integer := 1422;
-    
-    type comb1_buffer_t is array (0 to COMB1_SIZE-1) of signed(15 downto 0);
-    type comb2_buffer_t is array (0 to COMB2_SIZE-1) of signed(15 downto 0);
-    type comb3_buffer_t is array (0 to COMB3_SIZE-1) of signed(15 downto 0);
-    type comb4_buffer_t is array (0 to COMB4_SIZE-1) of signed(15 downto 0);
-    
-    signal comb1_buf : comb1_buffer_t := (others => (others => '0'));
-    signal comb2_buf : comb2_buffer_t := (others => (others => '0'));
-    signal comb3_buf : comb3_buffer_t := (others => (others => '0'));
-    signal comb4_buf : comb4_buffer_t := (others => (others => '0'));
-    
-    signal comb1_ptr : integer range 0 to COMB1_SIZE-1 := 0;
-    signal comb2_ptr : integer range 0 to COMB2_SIZE-1 := 0;
-    signal comb3_ptr : integer range 0 to COMB3_SIZE-1 := 0;
-    signal comb4_ptr : integer range 0 to COMB4_SIZE-1 := 0;
-    
-    signal comb1_out, comb2_out, comb3_out, comb4_out : signed(15 downto 0) := (others => '0');
-    signal comb1_filt, comb2_filt, comb3_filt, comb4_filt : signed(15 downto 0) := (others => '0');
-    
-    -- 2 All-pass filters em série
-    constant AP1_SIZE : integer := 225;
-    constant AP2_SIZE : integer := 341;
-    
-    type ap1_buffer_t is array (0 to AP1_SIZE-1) of signed(15 downto 0);
-    type ap2_buffer_t is array (0 to AP2_SIZE-1) of signed(15 downto 0);
-    
-    signal ap1_buf : ap1_buffer_t := (others => (others => '0'));
-    signal ap2_buf : ap2_buffer_t := (others => (others => '0'));
-    
-    signal ap1_ptr : integer range 0 to AP1_SIZE-1 := 0;
-    signal ap2_ptr : integer range 0 to AP2_SIZE-1 := 0;
-    
-    signal ap1_out, ap2_out : signed(15 downto 0) := (others => '0');
-    
-    -- Coeficientes
-    signal feedback_coef : signed(15 downto 0) := (others => '0');
-    signal damp_coef     : signed(15 downto 0) := (others => '0');
-    signal sample_in_s   : signed(15 downto 0);
-    
+architecture rtl of reverb is
+    type len_t is array (0 to 7) of integer;
+    constant COMB_LEN : len_t := (1214, 1293, 1390, 1476, 1548, 1623, 1695, 1760);  -- Freeverb, 44.1k -> 48k
+    constant AP_LEN   : len_t := (605, 480, 371, 245, 0, 0, 0, 0);
+
+    type s16_array is array (natural range <>) of signed(15 downto 0);
+    signal x, cin   : signed(15 downto 0);
+    signal g        : signed(15 downto 0);
+    signal damp     : signed(16 downto 0);
+    signal comb_y   : s16_array(0 to 7);
+    signal ap       : s16_array(0 to 4);    -- ap(0) = comb mix, ap(4) = wet
 begin
-    sample_in_s <= signed(sample_in);
-    
+    x    <= signed(sample_in);
+    cin  <= shift_right(x, 2);
+    g    <= to_signed(22938 + to_integer(unsigned(room_size)) * 285, 16);
+    damp <= to_signed(32768 - (1638 + to_integer(unsigned(damping)) * 740), 17);
+
+    combs : for i in 0 to 7 generate
+        c : entity work.reverb_comb generic map (N => COMB_LEN(i))
+            port map (clk => clk, ce => ce, x => cin, g => g, damp => damp, y => comb_y(i));
+    end generate;
+
+    process(comb_y)
+        variable tot : signed(18 downto 0);
+    begin
+        tot := (others => '0');
+        for i in 0 to 7 loop
+            tot := tot + resize(comb_y(i), 19);
+        end loop;
+        ap(0) <= resize(shift_right(tot, 3), 16);
+    end process;
+
+    allpasses : for i in 0 to 3 generate
+        a : entity work.reverb_allpass generic map (N => AP_LEN(i))
+            port map (clk => clk, ce => ce, x => ap(i), y => ap(i + 1));
+    end generate;
+
     process(clk)
-        variable comb_sum   : signed(31 downto 0);
-        variable fb_mult    : signed(31 downto 0);
-        variable damp_mult  : signed(31 downto 0);
-        variable ap_temp    : signed(31 downto 0);
-        variable mixed      : signed(31 downto 0);
-        variable filt_diff  : signed(31 downto 0);
     begin
         if rising_edge(clk) then
             if ce = '1' then
-                -- Calcular coeficientes baseados nos controles
-                -- Room size -> feedback (0.7 a 0.95): 22937 + 31*264 = 31121 (< 32767, sem estourar)
-                feedback_coef <= to_signed(22937 + to_integer(unsigned(room_size)) * 264, 16);
-                -- Damping -> filtro passa-baixa (0.1 a 0.7)
-                damp_coef <= to_signed(3276 + to_integer(unsigned(damping)) * 655, 16);
-            
-                -- === COMB FILTERS (paralelo) ===
-            
-                -- Comb 1
-                comb1_out <= comb1_buf(comb1_ptr);
-                filt_diff := (comb1_out - comb1_filt) * damp_coef;
-                comb1_filt <= comb1_filt + filt_diff(30 downto 15);
-                fb_mult := comb1_filt * feedback_coef;
-                comb1_buf(comb1_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
-                if comb1_ptr = COMB1_SIZE - 1 then
-                    comb1_ptr <= 0;
-                else
-                    comb1_ptr <= comb1_ptr + 1;
-                end if;
-            
-                -- Comb 2
-                comb2_out <= comb2_buf(comb2_ptr);
-                filt_diff := (comb2_out - comb2_filt) * damp_coef;
-                comb2_filt <= comb2_filt + filt_diff(30 downto 15);
-                fb_mult := comb2_filt * feedback_coef;
-                comb2_buf(comb2_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
-                if comb2_ptr = COMB2_SIZE - 1 then
-                    comb2_ptr <= 0;
-                else
-                    comb2_ptr <= comb2_ptr + 1;
-                end if;
-            
-                -- Comb 3
-                comb3_out <= comb3_buf(comb3_ptr);
-                filt_diff := (comb3_out - comb3_filt) * damp_coef;
-                comb3_filt <= comb3_filt + filt_diff(30 downto 15);
-                fb_mult := comb3_filt * feedback_coef;
-                comb3_buf(comb3_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
-                if comb3_ptr = COMB3_SIZE - 1 then
-                    comb3_ptr <= 0;
-                else
-                    comb3_ptr <= comb3_ptr + 1;
-                end if;
-            
-                -- Comb 4
-                comb4_out <= comb4_buf(comb4_ptr);
-                filt_diff := (comb4_out - comb4_filt) * damp_coef;
-                comb4_filt <= comb4_filt + filt_diff(30 downto 15);
-                fb_mult := comb4_filt * feedback_coef;
-                comb4_buf(comb4_ptr) <= sat16(resize(sample_in_s, 17) + fb_mult(30 downto 15));
-                if comb4_ptr = COMB4_SIZE - 1 then
-                    comb4_ptr <= 0;
-                else
-                    comb4_ptr <= comb4_ptr + 1;
-                end if;
-            
-                -- Somar saídas dos comb filters
-                comb_sum := resize(comb1_out, 32) + resize(comb2_out, 32) + 
-                            resize(comb3_out, 32) + resize(comb4_out, 32);
-            
-                -- === ALL-PASS FILTERS (série) ===
-            
-                -- All-pass 1
-                ap_temp := comb_sum / 4;
-                ap1_out <= sat16(resize(ap1_buf(ap1_ptr), 17) + ap_temp(15 downto 0));
-                ap1_buf(ap1_ptr) <= sat16(resize(ap_temp(15 downto 0), 17) - (ap1_out / 2));
-                if ap1_ptr = AP1_SIZE - 1 then
-                    ap1_ptr <= 0;
-                else
-                    ap1_ptr <= ap1_ptr + 1;
-                end if;
-            
-                -- All-pass 2
-                ap2_out <= sat16(resize(ap2_buf(ap2_ptr), 17) + ap1_out);
-                ap2_buf(ap2_ptr) <= sat16(resize(ap1_out, 17) - (ap2_out / 2));
-                if ap2_ptr = AP2_SIZE - 1 then
-                    ap2_ptr <= 0;
-                else
-                    ap2_ptr <= ap2_ptr + 1;
-                end if;
-            
-                -- Dry at 1.0 + reverb at 0.5 (was 0.25 + 0.25, i.e. -12 dB)
-                mixed := shift_left(resize(sample_in_s, 32), 15) + shift_left(resize(ap2_out, 32), 14);
-            
-                -- Saída com saturação
-                sample_out <= std_logic_vector(sat16(shift_right(mixed, 15)));
+                -- dry 1.0 + wet 1.5 (the comb input was scaled by 1/4)
+                sample_out <= std_logic_vector(sat16(resize(x, 18) + shift_right(resize(ap(4), 18) * 3, 1)));
             end if;
         end if;
     end process;
-    
-end architecture a;
+end architecture rtl;

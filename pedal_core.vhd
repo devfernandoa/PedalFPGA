@@ -73,39 +73,6 @@ architecture a of pedal_core is
 		);
 	end component;
 
-	component distortion
-	 port (
-			sample_in : in	std_logic_vector(15 downto 0);
-			sample_out : out std_logic_vector(15 downto 0);
-			gain : in	std_logic_vector(15 downto 0);
-			dist_pos : in	std_logic_vector(15 downto 0)
-		);
-	end component;
-
-	component tremolo
-	 port (
-			sample_in  : in	std_logic_vector(15 downto 0);
-			sample_out : out std_logic_vector(15 downto 0);
-			LD_Sample  : in std_logic;
-			clk 	   : in std_logic;
-			cl 	   : in std_logic;
-			--Parametros:
-			rate 	: in std_logic_vector(15 downto 0); --Velocidad del tremolo
-			atack 	: in std_logic_vector(15 downto 0);--Define el corte Brusco o suave?
-			wave 	: in std_logic_vector(1 downto 0)  --Forma de la onda. Seno, cuadrada, triangular?
-		);
-	end component;
-
-
-	component overdrive
-	 port (
-			sample_in : in	std_logic_vector(15 downto 0);
-			sample_out : out std_logic_vector(15 downto 0);
-			gain : in	std_logic_vector(15 downto 0);
-			dist_pos : in	std_logic_vector(15 downto 0)
-		);
-	end component;
-
 	component delay
 	 port (
 			clk         : in  std_logic;
@@ -122,7 +89,7 @@ architecture a of pedal_core is
 			clk         : in  std_logic;
 			ce          : in  std_logic;
 			sample_in   : in  std_logic_vector(15 downto 0);
-			frequency   : in  std_logic_vector(4 downto 0);
+			sensitivity : in  std_logic_vector(4 downto 0);
 			resonance   : in  std_logic_vector(4 downto 0);
 			sample_out  : out std_logic_vector(15 downto 0)
 		);
@@ -169,17 +136,9 @@ architecture a of pedal_core is
 	signal fx_out     : sample_array;                    -- output of each effect, indexed by id
 	signal sample_out : std_logic_vector(15 downto 0) := (others => '0');
 	
-    -- Control Signals
+    -- Booster gain (knob A coarse, B fine)
 	signal multiplier : std_logic_vector(15 downto 0);
-	signal pot_distor : std_logic_vector(15 downto 0);
-    signal dist_gain  : std_logic_vector(15 downto 0);
-	signal od_thresh  : std_logic_vector(15 downto 0);
-    signal od_gain    : std_logic_vector(15 downto 0);
-    
-	--TREMOLO FX SIGNALS
-	signal velocidad, ataque: std_logic_vector(15 downto 0);
-	signal onda	  	: std_logic_vector(1 downto 0);
-    
+
     -- Effect ids (same as pedal_regs.vhd); PARAM[e]: bits 9..5 = knob A, 4..0 = knob B
     constant FX_BOOST : integer := 0;
     constant FX_DIST  : integer := 1;
@@ -208,31 +167,6 @@ architecture a of pedal_core is
     signal wait_cnt   : integer range 0 to SLOT_WAIT := 0;
     signal fx_ce      : std_logic_vector(7 downto 0) := (others => '0');
     signal in_ready_d : std_logic := '0';
-
-    -- Distortion/overdrive make-up gain: the clip threshold is 3000 - 95*drive, so a fixed
-    -- gain makes more drive = louder. MAKEUP(drive) = 256*CLIP_PEAK/threshold brings the
-    -- clipped peak back to CLIP_PEAK (gain is x/256 in booster); knob B scales it by (B+1)/32.
-    constant CLIP_PEAK : integer := 16000;  -- clipped peak at B=31; tune by ear
-    type makeup_t is array (0 to 31) of integer;
-    function makeup_init return makeup_t is
-        variable t : makeup_t;
-    begin
-        for d in 0 to 31 loop
-            t(d) := 256 * CLIP_PEAK / (3000 - 95 * d);
-        end loop;
-        return t;
-    end function;
-    constant MAKEUP : makeup_t := makeup_init;
-
-    function clip_gain(knobs : std_logic_vector(9 downto 0)) return std_logic_vector is
-        variable g : integer;
-    begin
-        g := MAKEUP(to_integer(unsigned(knobs(9 downto 5)))) * (to_integer(unsigned(knobs(4 downto 0))) + 1) / 32;
-        if g > 32767 then  -- booster multiplier is signed
-            g := 32767;
-        end if;
-        return std_logic_vector(to_unsigned(g, 16));
-    end function;
 
     function seg7(i : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
@@ -316,7 +250,7 @@ begin
     current_effect <= to_integer(unsigned(chain(3 downto 0)));
     p_cur <= p(current_effect mod 8) when current_effect < 8 else (others => '0');
 
-    -- Parameter Calculation Process
+    -- Booster gain; the other effects map their knobs themselves
     process(CLOCK_50)
     begin
         if rising_edge(CLOCK_50) then
@@ -324,26 +258,9 @@ begin
             -- so 0..4x; A=8 B=0 is 1x, the mid setting (A=16 B=16) is about 2x.
             multiplier <= "000000" & p(FX_BOOST);
 
-            -- 2. DISTORTION/OVERDRIVE DRIVE (knob A/B)
-            -- Threshold: High knob A = Low Threshold (More Dist).
-            -- Range: 3000 down to ~55.
-            pot_distor <= std_logic_vector(to_unsigned(3000, 16) - resize(unsigned(p(FX_DIST)(9 downto 5)) * to_unsigned(95, 11), 16));
-            od_thresh  <= std_logic_vector(to_unsigned(3000, 16) - resize(unsigned(p(FX_OD)(9 downto 5)) * to_unsigned(95, 11), 16));
-
-            -- 3. DISTORTION/OVERDRIVE LEVEL (knob B), independent of the drive (see MAKEUP)
-            dist_gain <= clip_gain(p(FX_DIST));
-            od_gain   <= clip_gain(p(FX_OD));
-
-            -- 4. TREMOLO RATE (knob A/B)
-            velocidad <= std_logic_vector(to_unsigned(2400, 16) + resize(unsigned(p(FX_TREM)(9 downto 5)) * to_unsigned(512, 11), 16));
-
-            -- 5. TREMOLO DEPTH (knob A/B)
-            ataque <= std_logic_vector(resize(unsigned(p(FX_TREM)(4 downto 0)) * to_unsigned(1024, 11), 16));
         end if;
     end process;
     
-    onda <= "10"; -- Triangular Wave
-	
 	inst1: au_setup
 		generic map	(SAMPLE_RATE => 3)
 		port map(	reset => reset,
@@ -463,32 +380,36 @@ begin
                 sample_out => fx_out(FX_BOOST) 	
         );
 
-        inst_distortion : distortion
-        port map (	
-                sample_in => chain_x,
-                gain => dist_gain,
-                dist_pos => pot_distor,
-                sample_out => fx_out(FX_DIST) 	
-        );
-
-        inst_overdrive : overdrive
-        port map (	
-                sample_in => chain_x,
-                gain => od_gain,
-                dist_pos => od_thresh,
-                sample_out => fx_out(FX_OD) 	
-        );
-
-        inst_tremolo : tremolo
+        inst_distortion : entity work.drive
+        generic map (OVERDRIVE => false)
         port map (
+                clk        => CLOCK_50,
+                ce         => fx_ce(FX_DIST),
                 sample_in  => chain_x,
-                sample_out => fx_out(FX_TREM),
-                LD_Sample  => in_ready,
-                clk 	   => CLOCK_50,
-                cl 	   => reset,
-                rate 	   => velocidad, -- Rate: knob A
-                atack 	   => ataque,    -- Depth: knob B
-                wave 	   => onda       -- Triangle
+                drive_k    => p(FX_DIST)(9 downto 5),
+                level_k    => p(FX_DIST)(4 downto 0),
+                sample_out => fx_out(FX_DIST)
+        );
+
+        inst_overdrive : entity work.drive
+        generic map (OVERDRIVE => true)
+        port map (
+                clk        => CLOCK_50,
+                ce         => fx_ce(FX_OD),
+                sample_in  => chain_x,
+                drive_k    => p(FX_OD)(9 downto 5),
+                level_k    => p(FX_OD)(4 downto 0),
+                sample_out => fx_out(FX_OD)
+        );
+
+        inst_tremolo : entity work.tremolo
+        port map (
+                clk        => CLOCK_50,
+                ce         => fx_ce(FX_TREM),
+                sample_in  => chain_x,
+                rate       => p(FX_TREM)(9 downto 5),
+                depth      => p(FX_TREM)(4 downto 0),
+                sample_out => fx_out(FX_TREM)
         );
 
         inst_delay : delay
@@ -506,8 +427,8 @@ begin
                 clk        => CLOCK_50,
                 ce         => fx_ce(FX_WAH),
                 sample_in  => chain_x,
-                frequency  => p(FX_WAH)(9 downto 5),  -- Center frequency
-                resonance  => p(FX_WAH)(4 downto 0),  -- Resonance (Q)
+                sensitivity => p(FX_WAH)(9 downto 5),
+                resonance  => p(FX_WAH)(4 downto 0),
                 sample_out => fx_out(FX_WAH)
         );
 
