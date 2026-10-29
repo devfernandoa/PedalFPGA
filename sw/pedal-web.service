@@ -1,0 +1,10 @@
+[Unit]
+Description=PedalFPGA web UI (busybox httpd on port 80)
+After=network.target
+
+[Service]
+ExecStart=/bin/busybox httpd -f -p 80 -h /home/root/web
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

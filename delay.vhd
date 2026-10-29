@@ -60,7 +60,8 @@ begin
                 feedback_amt <= fb_mult(30 downto 15);
             
                 -- Mixar sinal seco + atrasado com feedback
-                dry_wet := sample_in_s * to_signed(16384, 16) + 
+                -- dry at 1.0 (2^15), echo at feedback*512/2^15 (up to ~0.48)
+                dry_wet := shift_left(resize(sample_in_s, 32), 15) +
                            delayed_sample * to_signed(to_integer(unsigned(feedback)) * 512, 16);
             
                 -- Escrever no buffer (entrada + feedback)

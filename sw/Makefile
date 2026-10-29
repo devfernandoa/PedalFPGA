@@ -26,7 +26,14 @@ deploy-rbf: $(RBF)
 	scp -O $(RBF) $(BOARD):/tmp/soc_system.rbf
 	ssh $(BOARD) "mkdir -p /mnt/boot && mount /dev/mmcblk0p1 /mnt/boot && cp /tmp/soc_system.rbf /mnt/boot/ && sync && umount /mnt/boot && reboot"
 
+# Web UI: static page + CGI (web/), served by busybox httpd on port 80, started at boot by systemd.
+deploy-web: $(TARGET)
+	chmod +x web/cgi-bin/pedal
+	scp -O $(TARGET) $(BOARD):$(REMOTE_DIR)/
+	scp -O -r web pedal-web.service $(BOARD):$(REMOTE_DIR)/
+	ssh $(BOARD) "mv $(REMOTE_DIR)/pedal-web.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable pedal-web && systemctl restart pedal-web && sync"
+
 clean:
 	rm -f $(TARGET)
 
-.PHONY: build deploy rbf deploy-rbf clean
+.PHONY: build deploy rbf deploy-rbf deploy-web clean

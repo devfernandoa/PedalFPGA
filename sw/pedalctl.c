@@ -6,6 +6,7 @@
  *
  *   pedalctl id                       read ID (expect 0x50ED0001)
  *   pedalctl dump                     print every register
+ *   pedalctl json                     same, as JSON (for the web UI)
  *   pedalctl chain <fx> [<fx> ...]    set the chain: audio goes through the effects in this order
  *                                     (up to 8, each at most once; names or 0..7)
  *   pedalctl chain none               empty chain (clean signal)
@@ -54,7 +55,7 @@ static int parse_knob(const char *s)
 static int usage(void)
 {
     fprintf(stderr,
-            "usage: pedalctl id | dump | chain none | chain <fx>... | param <fx> <a> <b>\n"
+            "usage: pedalctl id | dump | json | chain none | chain <fx>... | param <fx> <a> <b>\n"
             "  fx: booster distortion overdrive tremolo delay wah phaser reverb (or 0..7)\n"
             "  a, b: 0..31\n");
     return 2;
@@ -100,6 +101,21 @@ int main(int argc, char **argv)
             uint32_t p = regs[REG_PARAM + e];
             printf("%-10s A=%2u B=%2u\n", fx_names[e], (p >> 5) & 31, p & 31);
         }
+    } else if (strcmp(cmd, "json") == 0) {
+        /* same as dump, for the web UI: {"chain":["delay",...],"params":{"booster":[a,b],...}} */
+        uint32_t chain = regs[REG_CHAIN];
+        printf("{\"chain\":[");
+        for (int s = 0, n = 0; s < 8; s++) {
+            unsigned fx = (chain >> (4 * s)) & 0xF;
+            if (fx < N_FX)
+                printf("%s\"%s\"", n++ ? "," : "", fx_names[fx]);
+        }
+        printf("],\"params\":{");
+        for (int e = 0; e < N_FX; e++) {
+            uint32_t p = regs[REG_PARAM + e];
+            printf("%s\"%s\":[%u,%u]", e ? "," : "", fx_names[e], (p >> 5) & 31, p & 31);
+        }
+        printf("}}\n");
     } else if (strcmp(cmd, "chain") == 0) {
         if (argc < 3 || argc > 2 + 8)
             return usage();

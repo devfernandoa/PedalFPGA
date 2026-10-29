@@ -1029,3 +1029,5 @@ set_global_assignment -name VHDL_FILE au_in.vhd
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
 
 set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
+# Fitter seed: seed 1 left ~-0.08 ns hold on the HPS lightweight bridge -> interconnect paths
+set_global_assignment -name SEED 2

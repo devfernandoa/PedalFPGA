@@ -209,6 +209,31 @@ architecture a of pedal_core is
     signal fx_ce      : std_logic_vector(7 downto 0) := (others => '0');
     signal in_ready_d : std_logic := '0';
 
+    -- Distortion/overdrive make-up gain: the clip threshold is 3000 - 95*drive, so a fixed
+    -- gain makes more drive = louder. MAKEUP(drive) = 256*CLIP_PEAK/threshold brings the
+    -- clipped peak back to CLIP_PEAK (gain is x/256 in booster); knob B scales it by (B+1)/32.
+    constant CLIP_PEAK : integer := 16000;  -- clipped peak at B=31; tune by ear
+    type makeup_t is array (0 to 31) of integer;
+    function makeup_init return makeup_t is
+        variable t : makeup_t;
+    begin
+        for d in 0 to 31 loop
+            t(d) := 256 * CLIP_PEAK / (3000 - 95 * d);
+        end loop;
+        return t;
+    end function;
+    constant MAKEUP : makeup_t := makeup_init;
+
+    function clip_gain(knobs : std_logic_vector(9 downto 0)) return std_logic_vector is
+        variable g : integer;
+    begin
+        g := MAKEUP(to_integer(unsigned(knobs(9 downto 5)))) * (to_integer(unsigned(knobs(4 downto 0))) + 1) / 32;
+        if g > 32767 then  -- booster multiplier is signed
+            g := 32767;
+        end if;
+        return std_logic_vector(to_unsigned(g, 16));
+    end function;
+
     function seg7(i : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
         case i is
@@ -295,14 +320,9 @@ begin
     process(CLOCK_50)
     begin
         if rising_edge(CLOCK_50) then
-            -- 1. BOOSTER GAIN (knob A/B)
-            -- Base 256 (1x).
-            -- Knob A: 0 to 31 * 900 = 27900.
-            -- Knob B: 0 to 31 * 100 = 3100.
-            -- Max Total: 256 + 27900 + 3100 = 31256 (Safe < 32767).
-            multiplier <= std_logic_vector(to_unsigned(256, 16) 
-                                         + resize(unsigned(p(FX_BOOST)(9 downto 5)) * to_unsigned(900, 11), 16)
-                                         + resize(unsigned(p(FX_BOOST)(4 downto 0)) * to_unsigned(100, 11), 16));
+            -- 1. BOOSTER GAIN: A (coarse) and B (fine) form one 10-bit number = gain*256,
+            -- so 0..4x; A=8 B=0 is 1x, the mid setting (A=16 B=16) is about 2x.
+            multiplier <= "000000" & p(FX_BOOST);
 
             -- 2. DISTORTION/OVERDRIVE DRIVE (knob A/B)
             -- Threshold: High knob A = Low Threshold (More Dist).
@@ -310,12 +330,9 @@ begin
             pot_distor <= std_logic_vector(to_unsigned(3000, 16) - resize(unsigned(p(FX_DIST)(9 downto 5)) * to_unsigned(95, 11), 16));
             od_thresh  <= std_logic_vector(to_unsigned(3000, 16) - resize(unsigned(p(FX_OD)(9 downto 5)) * to_unsigned(95, 11), 16));
 
-            -- 3. DISTORTION/OVERDRIVE LEVEL (knob A/B)
-            -- Gain: Base 256 (1x) + knob B * 900. 
-            -- Max: 256 + 31*900 = 28156 (Safe < 32767).
-            -- Prevents sign flip in booster component.
-            dist_gain <= std_logic_vector(to_unsigned(256, 16) + resize(unsigned(p(FX_DIST)(4 downto 0)) * to_unsigned(900, 11), 16));
-            od_gain   <= std_logic_vector(to_unsigned(256, 16) + resize(unsigned(p(FX_OD)(4 downto 0)) * to_unsigned(900, 11), 16));
+            -- 3. DISTORTION/OVERDRIVE LEVEL (knob B), independent of the drive (see MAKEUP)
+            dist_gain <= clip_gain(p(FX_DIST));
+            od_gain   <= clip_gain(p(FX_OD));
 
             -- 4. TREMOLO RATE (knob A/B)
             velocidad <= std_logic_vector(to_unsigned(2400, 16) + resize(unsigned(p(FX_TREM)(9 downto 5)) * to_unsigned(512, 11), 16));

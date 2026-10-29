@@ -154,8 +154,8 @@ begin
                     ap2_ptr <= ap2_ptr + 1;
                 end if;
             
-                -- Mixar sinal seco com reverb (50/50)
-                mixed := shift_left(resize(sample_in_s, 32), 13) + shift_left(resize(ap2_out, 32), 13);
+                -- Dry at 1.0 + reverb at 0.5 (was 0.25 + 0.25, i.e. -12 dB)
+                mixed := shift_left(resize(sample_in_s, 32), 15) + shift_left(resize(ap2_out, 32), 14);
             
                 -- Saída com saturação
                 sample_out <= std_logic_vector(sat16(shift_right(mixed, 15)));

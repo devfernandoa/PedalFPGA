@@ -1,0 +1,18 @@
+#!/bin/sh
+# Web UI backend, run by busybox httpd as CGI. Applies at most one change, then returns the state:
+#   /cgi-bin/pedal                       -> {"chain":[...],"params":{...}}
+#   /cgi-bin/pedal?chain=overdrive+delay  (or chain=none)
+#   /cgi-bin/pedal?param=delay+24+20
+# pedalctl validates every name/number; anything outside [a-z0-9+=] is ignored before it gets there.
+P=/home/root/pedalctl
+
+echo "Content-Type: application/json"
+echo "Cache-Control: no-store"
+echo
+
+case "$QUERY_STRING" in
+    *[!a-z0-9+=]*) ;;
+    chain=*) $P chain $(echo "${QUERY_STRING#chain=}" | tr + ' ') >/dev/null 2>&1 ;;
+    param=*) $P param $(echo "${QUERY_STRING#param=}" | tr + ' ') >/dev/null 2>&1 ;;
+esac
+$P json
