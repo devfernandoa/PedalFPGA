@@ -3,8 +3,9 @@ Description=PedalFPGA front panel (HPS_KEY cycles presets, LCD shows the name)
 
 [Service]
 ExecStart=/home/root/pedalctl panel
-# If the LCD shows nothing or is upside down / mirrored, try these:
-#Environment=PANEL_CONTRAST=24
+# Another LCD module: find its contrast with `pedalctl lcdcal`, then set it here. Upside down: PANEL_FLIP=1.
+#Environment=PANEL_RATIO=6
+#Environment=PANEL_CONTRAST=5
 #Environment=PANEL_FLIP=1
 Restart=always
 RestartSec=2

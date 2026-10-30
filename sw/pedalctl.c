@@ -17,6 +17,7 @@
  *   pedalctl tune                     pitch of the input as JSON: {"hz":82.41,"note":"E2","cents":-3}
  *   pedalctl save|load|delete <name>  presets (chain + knobs + input + cab + volume) in PRESET_DIR
  *   pedalctl panel                    front panel: HPS_KEY cycles presets, the LCD shows the name (runs forever)
+ *   pedalctl lcdcal                   find the LCD contrast with HPS_KEY (stop pedal-panel first)
  *   pedalctl pitchtest                check the pitch detector on synthetic notes (no FPGA needed)
  *   pedalctl paneltest                print a sample LCD screen as text (no board needed)
  */
@@ -96,7 +97,7 @@ static int usage(void)
     fprintf(stderr,
             "usage: pedalctl id | dump | json | chain none | chain <fx>... | param <fx> <a> <b>\n"
             "                | input line|mic | cab on|off | volume <0..31> | tune\n"
-            "                | save|load|delete <name> | panel | pitchtest | paneltest\n"
+            "                | save|load|delete <name> | panel | lcdcal | pitchtest | paneltest\n"
             "  fx: booster distortion overdrive tremolo delay wah phaser reverb compressor chorus flanger (or 0..10)\n"
             "  a, b: 0..31;  name: 1..24 of a-z 0-9\n");
     return 2;
@@ -325,8 +326,8 @@ static void read_current(char *buf, size_t n)
  * order, wrapping), the 128x64 LCD shows the preset's name, its number and the chain. Both hang off
  * the HPS: the button and the LCD's control lines are HPS GPIOs (sysfs), the LCD data goes through
  * SPI master 0, driven here through its registers (this kernel has no spidev).
- * The LCD is an ST7565-type controller; PANEL_FLIP=1 rotates it 180 degrees and PANEL_CONTRAST
- * (0..63) sets the contrast, in case a module differs. */
+ * The LCD is an ST7565-type controller; PANEL_FLIP=1 rotates it 180 degrees, PANEL_RATIO (0..7) and
+ * PANEL_CONTRAST (0..63) set the contrast (find them with `pedalctl lcdcal`). */
 
 #define SPIM0_BASE 0xFFF00000u
 #define GPIO1_LABEL "ff709000.gpio" /* HPS GPIO29..57 */
@@ -399,18 +400,19 @@ static int draw_text(int x, int y, const char *t, int s)
         int c = *t >= 'a' && *t <= 'z' ? *t - 32 : *t;
         const char *pos = strchr(FONT_CHARS, c);
         int g = pos && c ? (int)(pos - FONT_CHARS) : 0;
+        int w = s == 1 ? 2 : s; /* size 1 is drawn bold (2-pixel strokes): 1-pixel lines are hard to read on the blue LCD */
         for (int r = 0; r < 7; r++)
             for (int col = 0; col < 5; col++)
                 if (FONT[g][r][col] == '#')
                     for (int dy = 0; dy < s; dy++)
-                        for (int dx = 0; dx < s; dx++)
+                        for (int dx = 0; dx < w; dx++)
                             px(x + col * s + dx, y + r * s + dy);
-        x += 6 * s;
+        x += s == 1 ? 7 : 6 * s;
     }
     return x - x0 - s;
 }
 
-static int text_width(const char *t, int s) { return (int)strlen(t) * 6 * s - s; }
+static int text_width(const char *t, int s) { return (int)strlen(t) * (s == 1 ? 7 : 6 * s) - s; }
 
 /* the screen: "PRESET n/N" and CAB/volume on top, the name as big as it fits, the chain at the bottom */
 static void render(const char *name, int idx, int count, uint32_t chain, uint32_t cfg, uint32_t vol)
@@ -433,8 +435,8 @@ static void render(const char *name, int idx, int count, uint32_t chain, uint32_
     int s = 3;
     while (s > 1 && text_width(big, s) > 128)
         s--;
-    char cut[22];
-    snprintf(cut, sizeof cut, "%s", big); /* 21 characters fit at size 1 */
+    char cut[19];
+    snprintf(cut, sizeof cut, "%s", big); /* 18 characters fit at size 1 */
     draw_text((128 - text_width(cut, s)) / 2, 33 - 7 * s / 2, cut, s);
 
     line[0] = '\0';
@@ -445,7 +447,7 @@ static void render(const char *name, int idx, int count, uint32_t chain, uint32_
     }
     if (!line[0])
         snprintf(line, sizeof line, "CLEAN");
-    line[21] = '\0';
+    line[18] = '\0';
     draw_text((128 - text_width(line, 1)) / 2, 57, line, 1);
 }
 
@@ -555,7 +557,17 @@ static void lcd_flush(int flip)
     }
 }
 
-static int panel(volatile uint32_t *regs)
+static int fd_key, flip;
+
+/* LCD contrast: the regulator resistor ratio (0..7, coarse) and the electronic volume (0..63, fine) */
+static void lcd_contrast(int ratio, int volume)
+{
+    uint8_t c[] = {(uint8_t)(0x20 | (ratio & 7)), 0x81, (uint8_t)(volume & 63)};
+    spi_send(0, c, sizeof c);
+}
+
+/* GPIOs, SPI and the LCD controller; contrast from PANEL_RATIO / PANEL_CONTRAST */
+static int lcd_open(void)
 {
     int base = gpio_base();
     if (base < 0) {
@@ -563,7 +575,7 @@ static int panel(volatile uint32_t *regs)
         return 1;
     }
     int fd_bk = gpio_open(base, PIN_LCD_BK, "out"), fd_rst = gpio_open(base, PIN_LCD_RST, "out");
-    int fd_key = gpio_open(base, PIN_KEY, "in");
+    fd_key = gpio_open(base, PIN_KEY, "in");
     fd_dc = gpio_open(base, PIN_LCD_DC, "out");
     if (fd_bk < 0 || fd_rst < 0 || fd_key < 0 || fd_dc < 0) {
         perror("gpio");
@@ -577,9 +589,7 @@ static int panel(volatile uint32_t *regs)
         return 1;
     }
     const char *e = getenv("PANEL_FLIP");
-    int flip = e && atoi(e);
-    e = getenv("PANEL_CONTRAST");
-    int contrast = e ? atoi(e) & 63 : 24;
+    flip = e && atoi(e);
 
     spi_init();
     gpio_set(fd_bk, 1);
@@ -591,10 +601,61 @@ static int panel(volatile uint32_t *regs)
                       (uint8_t)(flip ? 0xA1 : 0xA0), (uint8_t)(flip ? 0xC0 : 0xC8), /* orientation */
                       0x40,                    /* start line 0 */
                       0x2F,                    /* booster, regulator, follower on */
-                      0x26,                    /* regulator resistor ratio */
-                      0x81, (uint8_t)contrast, /* contrast */
                       0xA6, 0xA4, 0xAF};       /* normal, from RAM, display on */
     spi_send(0, init, sizeof init);
+    e = getenv("PANEL_RATIO");
+    int ratio = e ? atoi(e) : 6;
+    e = getenv("PANEL_CONTRAST");
+    lcd_contrast(ratio, e ? atoi(e) : 5);   /* found with lcdcal on the DE10-Standard's blue LCD */
+    return 0;
+}
+
+/* Find the contrast for this LCD: a short press on HPS KEY steps the fine contrast, a long press
+ * (> 0.6 s) the coarse ratio. The values are on the screen; put them in pedal-panel.service. */
+static int lcdcal(void)
+{
+    if (lcd_open())
+        return 1;
+    const char *e = getenv("PANEL_RATIO");
+    int ratio = e ? atoi(e) & 7 : 6;
+    e = getenv("PANEL_CONTRAST");
+    int vol = e ? atoi(e) & 63 : 5;
+    int idle = gpio_get(fd_key), held = 0, redraw = 1;
+    for (;;) {
+        if (redraw) {
+            char a[32], b[32];
+            memset(fb, 0, sizeof fb);
+            snprintf(a, sizeof a, "RATIO %d", ratio);
+            snprintf(b, sizeof b, "CONTRAST %d", vol);
+            draw_text((128 - text_width(a, 2)) / 2, 2, a, 2);
+            draw_text((128 - text_width(b, 2)) / 2, 22, b, 2);
+            draw_text((128 - text_width("SHORT: CONTRAST", 1)) / 2, 42, "SHORT: CONTRAST", 1);
+            draw_text((128 - text_width("LONG: RATIO", 1)) / 2, 54, "LONG: RATIO", 1);
+            lcd_contrast(ratio, vol);
+            lcd_flush(flip);
+            printf("PANEL_RATIO=%d PANEL_CONTRAST=%d\n", ratio, vol);
+            fflush(stdout);
+            redraw = 0;
+        }
+        int down = gpio_get(fd_key) != idle;
+        if (down) {
+            held++;
+        } else if (held) {
+            if (held >= 60)
+                ratio = (ratio + 1) % 8;
+            else if (held >= 3)
+                vol = (vol + 3) % 64;
+            held = 0;
+            redraw = 1;
+        }
+        sleep_ms(10);
+    }
+}
+
+static int panel(volatile uint32_t *regs)
+{
+    if (lcd_open())
+        return 1;
 
     /* back to the preset in use at power-off */
     char cur[32], shown[32] = "?";
@@ -750,6 +811,8 @@ int main(int argc, char **argv)
         regs[REG_VOLUME] = (uint32_t)v;
     } else if (strcmp(cmd, "panel") == 0) {
         ret = panel(regs);
+    } else if (strcmp(cmd, "lcdcal") == 0) {
+        ret = lcdcal();
     } else if (strcmp(cmd, "tune") == 0) {
         ret = tune(regs);
     } else if (strcmp(cmd, "save") == 0 && argc == 3) {
