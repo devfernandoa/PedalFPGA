@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Checks that every effect's VHDL computes exactly what sim/fx_model.py computes.
+"""Checks the codec interface (sim/tb_codec.vhd), then that every effect's VHDL computes exactly
+what sim/fx_model.py computes.
 
     python3 sim/test_vhdl.py
 
@@ -17,7 +18,7 @@ import fx_model as m
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / 'sim' / 'out' / 'ghdl'
-SRC = ['sat_pkg.vhd', 'booster.vhd', 'drive.vhd', 'tremolo.vhd', 'delay.vhd', 'wah.vhd', 'phaser.vhd',
+SRC = ['codec.vhd', 'sim/tb_codec.vhd', 'sat_pkg.vhd', 'booster.vhd', 'drive.vhd', 'tremolo.vhd', 'delay.vhd', 'wah.vhd', 'phaser.vhd',
        'reverb.vhd', 'sim/tb_fx.vhd']
 IMAGE = 'ghdl/ghdl:6.0.0-mcode-ubuntu-24.04'
 N = 24000                                   # 0.5 s: past the shortest delay and every reverb line
@@ -45,12 +46,15 @@ def model(fx, x, a, b):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / 'work-obj93.cf').unlink(missing_ok=True)   # start from a clean work library
     sig = m.riff()
     m.calibrate(sig)
     x = sig[:N]
     (OUT / 'in.txt').write_text('\n'.join(map(str, x)) + '\n')
     ghdl('-a', *[str(ROOT / f) for f in SRC])
     ghdl('-e', 'tb_fx')
+    ghdl('-e', 'tb_codec')
+    ghdl('-r', 'tb_codec')                  # stops with an error on the first wrong bit
 
     names = ['booster', 'distortion', 'overdrive', 'tremolo', 'delay', 'wah', 'phaser', 'reverb']
     bad = 0

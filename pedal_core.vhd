@@ -31,37 +31,6 @@ end pedal_core;
 
 architecture a of pedal_core is 
 
-	component au_setup
-	 generic	(
-			SAMPLE_RATE	: integer range 1 to 3 );
-	 port(	reset 	 : in std_logic;
-		clk_50	 : in std_logic;
-		mic_lin	 : in std_logic;
-		i2c_sdat : inout std_logic;
-		i2c_sclk : out std_logic;
-		aud_xck	 : out std_logic	);
-	end component;
-
-	component au_in
-	 port (
-			clk, reset : in	std_logic;
-			adclrc 	: in	std_logic;
-			bclk 	: in	std_logic;
-			adcdat 	: in	std_logic;
-			sample 	: out	std_logic_vector(15 downto 0);
-			ready 	: out	std_logic	);
-	end component;
-
-	component au_out
-	 port (
-			clk, reset : in	std_logic;
-			daclrc	: in	std_logic;
-			bclk 	: in	std_logic;
-			sample 	: in	std_logic_vector(15 downto 0);
-			dacdat 	: out	std_logic;
-			ready	: out	std_logic	);
-	end component;
-
 	-- ADC Component Removed (DE10-Standard uses LTC2308, not AD7928)
 	-- component AD7928_cyclic ...
 
@@ -120,7 +89,8 @@ architecture a of pedal_core is
 	--AUDIO SIGNALS
 	signal reset 	  : std_logic;
 	signal in_ready   : std_logic;
-	signal out_ready  : std_logic;
+	signal codec_rx, codec_tx : std_logic_vector(23 downto 0);
+	signal rx_round   : signed(24 downto 0);
 	signal sample_in  : std_logic_vector(15 downto 0);
     
     -- DC Blocker Signals
@@ -261,32 +231,29 @@ begin
         end if;
     end process;
     
-	inst1: au_setup
-		generic map	(SAMPLE_RATE => 3)
-		port map(	reset => reset,
-				clk_50 => CLOCK_50,
-				mic_lin	=> '0',
-				i2c_sdat => FPGA_I2C_SDAT,
+	inst_cfg: entity work.codec_cfg
+		port map(	clk => CLOCK_50,
+				aud_xck => AUD_XCK,
 				i2c_sclk => FPGA_I2C_SCLK,
-				aud_xck => AUD_XCK	);
-	
-	inst2: au_in
-		port map(	reset => reset,
-				clk => CLOCK_50,
-				adclrc	=> AUD_ADCLRCK,
+				i2c_sdat => FPGA_I2C_SDAT,
+				done => open	);
+
+	inst_i2s: entity work.codec_i2s
+		port map(	clk => CLOCK_50,
 				bclk => AUD_BCLK,
+				adclrck => AUD_ADCLRCK,
 				adcdat => AUD_ADCDAT,
-				sample => sample_in,
-				ready => in_ready	);
-	
-	inst3: au_out
-		port map(	reset => reset,
-				clk => CLOCK_50,
-				daclrc	=> AUD_DACLRCK,
-				bclk => AUD_BCLK,
-				sample => sample_out,
+				daclrck => AUD_DACLRCK,
 				dacdat => AUD_DACDAT,
-				ready => out_ready	);
+				rx => codec_rx,
+				rx_ready => in_ready,
+				tx => codec_tx	);
+
+	-- The codec runs at 24 bits; the effects at 16. Round in (saturating the one case that would
+	-- wrap, +full scale), pad out.
+	rx_round  <= resize(signed(codec_rx), 25) + 128;
+	sample_in <= x"7FFF" when rx_round(24 downto 23) = "01" else std_logic_vector(rx_round(23 downto 8));
+	codec_tx  <= sample_out & x"00";
 
 
 	-- ADC Instantiation Removed (Incompatible with DE10-Standard)

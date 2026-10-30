@@ -8,7 +8,7 @@ line or a web page.
   phaser, reverb (Freeverb)
 - Chain any of them in any order (up to 8 slots), two knobs per effect
 - DC blocker + noise gate in front of the chain
-- 48 kHz, 16-bit, through the on-board WM8731 codec
+- 48 kHz through the on-board WM8731 codec (24-bit to the codec, 16-bit through the effects)
 - Every effect has a bit-exact Python model, and a GHDL test checks the VHDL against it
 
 ---
@@ -34,12 +34,12 @@ HEX5/HEX4 show the first effect in the chain, HEX3..HEX0 and LEDR its knobs.
 | `pedal_regs.vhd` | Register bank the HPS writes (chain + knobs) |
 | `booster.vhd`, `drive.vhd`, `tremolo.vhd`, `delay.vhd`, `wah.vhd`, `phaser.vhd`, `reverb.vhd` | The effects (`drive` is both distortion and overdrive) |
 | `sat_pkg.vhd` | Saturation helpers |
-| `au_setup.vhd`, `au_in.vhd`, `au_out.vhd` | WM8731 setup (I²C) and I²S in/out |
+| `codec.vhd` | WM8731: register setup over I²C, 24-bit I²S in/out |
 | `make_soc_system.tcl`, `pedal_regs_hw.tcl` | Generate `soc_system.qsys` from the Terasic GHRD |
 | `sw/pedalctl.c` | CLI on the HPS that reads/writes the registers |
 | `sw/web/` | Web UI (static page + CGI calling `pedalctl`), served by busybox httpd |
 | `sim/fx_model.py` | Fixed-point models of the effects, property checks, WAV renders |
-| `sim/test_vhdl.py`, `sim/tb_fx.vhd` | GHDL test: VHDL vs model, sample by sample |
+| `sim/test_vhdl.py`, `sim/tb_fx.vhd`, `sim/tb_codec.vhd` | GHDL tests: codec against a WM8731 bus model; effects vs model, sample by sample |
 
 ---
 
@@ -99,7 +99,7 @@ make deploy-web         # pedalctl + web UI + systemd service
 
 ```sh
 python3 sim/fx_model.py     # property checks on the models (level, LFO rate, stability...) + WAVs in sim/out/
-python3 sim/test_vhdl.py    # every effect's VHDL vs its model, bit-exact, at 3 knob settings
+python3 sim/test_vhdl.py    # codec I2C/I2S, then every effect's VHDL vs its model, bit-exact, at 3 knob settings
 ```
 
 `test_vhdl.py` uses a local `ghdl` if there is one, otherwise the `ghdl/ghdl` Docker image (a few minutes).
@@ -120,5 +120,4 @@ CERN-OHL-S, contact fefealzueta@gmail.com for a separate commercial licence.
 
 **Third-party files** are not covered by either licence and keep their authors' terms:
 
-- `au_setup.vhd`, `au_in.vhd`, `au_out.vhd`: Andoni Arruti
 - `PedalFPGA_top.v`, `PedalFPGA.qsf` and the GHRD that `make_soc_system.tcl` builds on: Terasic Technologies
