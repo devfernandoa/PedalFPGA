@@ -1,7 +1,6 @@
 library ieee;
 use ieee.std_logic_1164.all;
 USE ieee.NUMERIC_STD.all;
--- use ieee.std_logic_signed.all;
 
 -- Audio path: codec -> DC blocker -> noise gate -> effects -> codec.
 -- Effect selection and knobs come from pedal_regs (written by the HPS), see pedal_regs.vhd.
@@ -31,8 +30,6 @@ end pedal_core;
 
 architecture a of pedal_core is 
 
-	-- ADC Component Removed (DE10-Standard uses LTC2308, not AD7928)
-	-- component AD7928_cyclic ...
 
 	component booster
 	 port (
@@ -87,7 +84,6 @@ architecture a of pedal_core is
 	end component;
 
 	--AUDIO SIGNALS
-	signal reset 	  : std_logic;
 	signal in_ready   : std_logic;
 	signal codec_rx, codec_tx : std_logic_vector(23 downto 0);
 	signal rx_round   : signed(24 downto 0);
@@ -163,17 +159,12 @@ architecture a of pedal_core is
 
 begin 
 	
-	reset <= '0'; -- Disabled reset as requested
     
     -- DC Blocker Process
     process(CLOCK_50)
     begin
         if rising_edge(CLOCK_50) then
-            if reset = '1' then
-                prev_sample <= (others => '0');
-                prev_dc <= (others => '0');
-                sample_dc <= (others => '0');
-            elsif in_ready = '1' then
+            if in_ready = '1' then
                 -- y[n] = x[n] - x[n-1] + 0.996 * y[n-1]
                 prev_dc <= signed(sample_in) - prev_sample + prev_dc - (prev_dc / 256);
                 prev_sample <= signed(sample_in);
@@ -256,14 +247,7 @@ begin
 	codec_tx  <= sample_out & x"00";
 
 
-	-- ADC Instantiation Removed (Incompatible with DE10-Standard)
-	-- inst4 : AD7928_cyclic ...
-
-
-
--------------Varlores potenciometros-------------
--- Removed old concurrent assignments
--------------DISTOR-------------
+	-- Display: first effect in the chain and its knobs
 		LEDR <= p_cur;
 		
         -- Effect Display (Active Low: 0=ON, 1=OFF)

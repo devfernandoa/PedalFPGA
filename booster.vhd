@@ -1,44 +1,22 @@
-------------------------------------------------------------------------------------------------
---  booster.vhd
-------------------------------------------------------------------------------------------------
--- Etapa de amplificacion limpia.
--- Dado un valor parametrizado multiplica la senal de entrada y retorna dicha senal amplificada.
--- Ganancia = multiplier/256; el resultado satura en +-32767 en vez de desbordar.
-------------------------------------------------------------------------------------------------
--- Jose Angel Gumiel
---  25/11/2016
-------------------------------------------------------------------------------------------------
-
-library IEEE;
-use IEEE.std_logic_1164.all;
-use ieee.std_logic_arith.all;
-use ieee.std_logic_signed.all;
+-- Clean boost: sample_out = sample_in * multiplier / 256, saturated to 16 bits.
+-- multiplier comes from knob A (coarse) & knob B (fine), so the gain goes 0 .. 4x (256 = 1x).
+-- Combinational. Same math as the booster in sim/test_vhdl.py.
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use work.sat_pkg.all;
 
 entity booster is
-	port(
-		--Datos:
-		sample_in  : in std_logic_vector(15 downto 0);
-		sample_out : out std_logic_vector(15 downto 0);
-		--Parametros:
-		multiplier : in std_logic_vector(15 downto 0)
-	);
+    port (
+        sample_in  : in  std_logic_vector(15 downto 0);
+        multiplier : in  std_logic_vector(15 downto 0);   -- gain * 256, unsigned (0 .. 1023 used)
+        sample_out : out std_logic_vector(15 downto 0)
+    );
 end entity booster;
 
-architecture a of booster is
-	signal signal_unnormalized: std_logic_vector(31 downto 0);
-	begin
-		
-		signal_unnormalized<=signed(sample_in)*signed(multiplier);
-		boost: process(signal_unnormalized)
-		begin
-			-- Resultado = producto / 256. Si no cabe en 16 bits (bits 31..23 distintos), satura.
-			if signal_unnormalized(31 downto 23) = "000000000" or signal_unnormalized(31 downto 23) = "111111111" then
-				sample_out <= signal_unnormalized(23 downto 8);
-			elsif (signal_unnormalized(31) = '1') then --resultado negativo
-				sample_out <= x"8000";
-			else --resultado positivo
-				sample_out <= x"7FFF";
-			end if;
-	end process;
-	
-end architecture a;
+architecture rtl of booster is
+    signal prod : signed(32 downto 0);
+begin
+    prod <= signed(sample_in) * signed('0' & multiplier);
+    sample_out <= std_logic_vector(sat16(shift_right(prod, 8)));
+end architecture rtl;
