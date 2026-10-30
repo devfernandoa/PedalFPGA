@@ -11,7 +11,11 @@ CFLAGS = -O2 -Wall -Wextra -std=gnu99
 build: $(TARGET)
 
 $(TARGET): pedalctl.c
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $< -o $@ -lm
+
+# Pitch detector self-check, built and run on this machine (no board needed)
+test: pedalctl.c
+	cc $(CFLAGS) $< -o /tmp/pedalctl-test -lm && /tmp/pedalctl-test pitchtest
 
 deploy: $(TARGET)
 	scp -O $(TARGET) $(BOARD):$(REMOTE_DIR)/
@@ -36,4 +40,4 @@ deploy-web: $(TARGET)
 clean:
 	rm -f $(TARGET)
 
-.PHONY: build deploy rbf deploy-rbf deploy-web clean
+.PHONY: build test deploy rbf deploy-rbf deploy-web clean

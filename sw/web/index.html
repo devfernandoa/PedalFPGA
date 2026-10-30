@@ -114,6 +114,30 @@
   .add.clear { justify-content: center; color: var(--muted); }
   .hint { margin: 18px 4px 0; font-size: 13px; color: var(--muted); }
 
+  /* amp panel: input/cab switches, presets, tuner */
+  .amp { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 22px; }
+  .box { padding: 18px; border-radius: 22px; box-shadow: var(--inset); display: flex; flex-direction: column; gap: 12px; }
+  .box h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 1.8px; color: var(--muted); }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .row > span { flex: 1; font-size: 14px; }
+  .seg { display: inline-flex; border-radius: 12px; box-shadow: var(--inset-sm); padding: 3px; gap: 3px; }
+  .seg button { box-shadow: none; padding: 6px 12px; border-radius: 9px; font-size: 13px; color: var(--muted); }
+  .seg button[aria-pressed="true"] { box-shadow: var(--raised-sm); color: var(--text); font-weight: 600; }
+  .btn { padding: 8px 14px; border-radius: 12px; font-size: 13px; }
+  .btn:disabled, select:disabled { visibility: visible; opacity: .45; cursor: default; }
+  select, input[type=text] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 0; border-radius: 12px;
+    padding: 8px 12px; box-shadow: var(--inset-sm); min-width: 0; flex: 1;
+  }
+  select:focus-visible, input:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
+  .tuner-note { font: 800 44px/1 system-ui, sans-serif; text-align: center; min-height: 44px; }
+  .tuner-note.ok { color: #34c06a; }
+  .meter { position: relative; height: 14px; border-radius: 7px; box-shadow: var(--inset-sm); }
+  .meter::after { content: ""; position: absolute; left: 50%; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; background: var(--line); }
+  .needle { position: absolute; top: 1px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--muted); transition: left .15s; }
+  .tuner-note.ok + .meter .needle { background: #34c06a; box-shadow: 0 0 8px #34c06a; }
+  .tuner-info { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); text-align: center; min-height: 16px; }
+
   @media (max-width: 520px) {
     main { padding-top: 22px; }
     .chain { flex-direction: column; padding: 20px 14px; }
@@ -132,6 +156,33 @@
     </div>
     <div class="pill" id="status" role="status"><span class="dot"></span><span id="status-text">connecting…</span></div>
   </header>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Amp</h2></div>
+    <div class="amp">
+      <div class="box">
+        <h3>Input &amp; output</h3>
+        <div class="row"><span>Input jack</span>
+          <div class="seg" role="group" aria-label="Input jack"><button data-input="line">Line (blue)</button><button data-input="mic">Mic (pink)</button></div></div>
+        <div class="row"><span>Cabinet simulator</span>
+          <div class="seg" role="group" aria-label="Cabinet simulator"><button data-cab="off">Off</button><button data-cab="on">On</button></div></div>
+        <p class="hint" style="margin:0">Mic adds +20 dB for a guitar without a preamp. The cabinet tames distortion fizz for headphones or a PA.</p>
+      </div>
+      <div class="box">
+        <h3>Presets</h3>
+        <div class="row"><select id="preset" aria-label="Preset"></select><button class="btn" id="preset-load">Load</button><button class="btn" id="preset-del">Delete</button></div>
+        <div class="row"><input type="text" id="preset-name" placeholder="name (a-z, 0-9)" maxlength="24" aria-label="New preset name"><button class="btn" id="preset-save">Save</button></div>
+        <p class="hint" style="margin:0">A preset stores the active chain, every knob, the input and the cabinet, on the board's SD card.</p>
+      </div>
+      <div class="box">
+        <h3>Tuner</h3>
+        <div class="tuner-note" id="tuner-note" aria-live="polite">–</div>
+        <div class="meter" aria-hidden="true"><div class="needle" id="needle" style="left:50%"></div></div>
+        <div class="tuner-info" id="tuner-info">off</div>
+        <button class="btn" id="tuner-btn" aria-pressed="false">Start tuner</button>
+      </div>
+    </div>
+  </section>
 
   <section class="panel">
     <div class="panel-head"><h2>Pedalboard</h2><span class="count" id="count"></span></div>
@@ -324,9 +375,71 @@ function render() {
   }
 }
 
+// ---- amp panel ----
+let amp = { input: 'line', cab: false, presets: [] };
+function applyState(s) {
+  if (!s || !s.chain) return;
+  if (s.chain.join() !== activeChain().join()) board = loadLayout(s.chain);
+  params = s.params;
+  amp = { input: s.input, cab: s.cab, presets: s.presets || [] };
+  render(); renderAmp();
+}
+function renderAmp() {
+  document.querySelectorAll('[data-input]').forEach(b => b.setAttribute('aria-pressed', b.dataset.input === amp.input));
+  document.querySelectorAll('[data-cab]').forEach(b => b.setAttribute('aria-pressed', (b.dataset.cab === 'on') === amp.cab));
+  const sel = document.getElementById('preset'), cur = sel.value;
+  sel.replaceChildren(...(amp.presets.length ? amp.presets : ['']).map(n => { const o = el('option'); o.value = n; o.textContent = n || 'no presets yet'; return o; }));
+  if (amp.presets.includes(cur)) sel.value = cur;
+  sel.disabled = !amp.presets.length;
+  document.getElementById('preset-load').disabled = document.getElementById('preset-del').disabled = !amp.presets.length;
+}
+document.querySelectorAll('[data-input]').forEach(b => b.onclick = () => call('input=' + b.dataset.input).then(applyState));
+document.querySelectorAll('[data-cab]').forEach(b => b.onclick = () => call('cab=' + b.dataset.cab).then(applyState));
+document.getElementById('preset-load').onclick = () => {
+  const n = document.getElementById('preset').value;
+  if (n) call('load=' + n).then(s => { board = []; applyState(s); saveLayout(); });
+};
+document.getElementById('preset-del').onclick = () => {
+  const n = document.getElementById('preset').value;
+  if (n && confirm(`Delete preset "${n}"?`)) call('delete=' + n).then(applyState);
+};
+document.getElementById('preset-save').onclick = () => {
+  const inp = document.getElementById('preset-name'), n = inp.value.trim().toLowerCase();
+  if (!/^[a-z0-9]{1,24}$/.test(n)) { inp.setCustomValidity('Use 1-24 letters a-z or digits'); inp.reportValidity(); return; }
+  inp.setCustomValidity('');
+  if (amp.presets.includes(n) && !confirm(`Overwrite preset "${n}"?`)) return;
+  call('save=' + n).then(s => { applyState(s); document.getElementById('preset').value = n; inp.value = ''; });
+};
+
+// tuner: one capture at a time through the same request queue, while it is on
+let tuning = false;
+async function tunerLoop() {
+  const note = document.getElementById('tuner-note'), info = document.getElementById('tuner-info'), needle = document.getElementById('needle');
+  while (tuning) {
+    const t = await call('tune');
+    if (!tuning) break;
+    if (t && t.hz > 0) {
+      note.textContent = t.note;
+      note.classList.toggle('ok', Math.abs(t.cents) <= 3);
+      needle.style.left = (50 + Math.max(-50, Math.min(50, t.cents))) + '%';
+      info.textContent = `${t.hz.toFixed(2)} Hz · ${t.cents > 0 ? '+' : ''}${t.cents} cents`;
+    } else {
+      note.classList.remove('ok');
+      info.textContent = 'play a single note';
+    }
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
+document.getElementById('tuner-btn').onclick = e => {
+  tuning = !tuning;
+  e.target.setAttribute('aria-pressed', tuning);
+  e.target.textContent = tuning ? 'Stop tuner' : 'Start tuner';
+  if (tuning) tunerLoop();
+  else { document.getElementById('tuner-note').textContent = '–'; document.getElementById('tuner-info').textContent = 'off'; document.getElementById('needle').style.left = '50%'; }
+};
+
 call('').then(s => {
-  if (s) { board = loadLayout(s.chain); params = s.params; }
-  render();
+  if (s) applyState(s); else { render(); renderAmp(); }
 });
 </script>
 </body>

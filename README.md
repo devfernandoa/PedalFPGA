@@ -7,8 +7,9 @@ line or a web page.
 - 8 effects: booster, distortion (RAT-style), overdrive (Tube Screamer-style), tremolo, delay, auto-wah,
   phaser, reverb (Freeverb)
 - Chain any of them in any order (up to 8 slots), two knobs per effect
-- DC blocker + noise gate in front of the chain
-- 48 kHz through the on-board WM8731 codec (24-bit to the codec, 16-bit through the effects)
+- DC blocker + noise gate in front of the chain, cabinet simulator (512-tap FIR) after it
+- Line or mic input, tuner, presets saved on the SD card
+- Exactly 48 kHz through the on-board WM8731 codec (24-bit to the codec, 16-bit through the effects)
 - Every effect has a bit-exact Python model, and a GHDL test checks the VHDL against it
 
 ---
@@ -17,9 +18,9 @@ line or a web page.
 
 | Jack | Use |
 |------|-----|
-| **Blue** (LINE IN) | Guitar in, through a preamp/buffer: a guitar alone is too quiet for line level |
-| **Green** (LINE OUT) | Amp or headphones |
-| Pink (MIC IN) | Not used |
+| **Blue** (LINE IN) | Guitar in, through a preamp/buffer (input = line, the default) |
+| **Pink** (MIC IN) | Guitar straight in, +20 dB in the codec (input = mic) |
+| **Green** (LINE OUT) | Amp or headphones (turn the cabinet on for headphones) |
 
 HEX5/HEX4 show the first effect in the chain, HEX3..HEX0 and LEDR its knobs.
 
@@ -31,7 +32,8 @@ HEX5/HEX4 show the first effect in the chain, HEX3..HEX0 and LEDR its knobs.
 |------|------|
 | `PedalFPGA_top.v` | Top level: HPS (Platform Designer `soc_system`) + `pedal_core`; only the pins in use |
 | `pedal_core.vhd` | Audio path: codec → DC blocker → noise gate → effect chain → codec |
-| `pedal_regs.vhd` | Register bank the HPS writes (chain + knobs) |
+| `pedal_regs.vhd` | Register bank the HPS reads/writes (chain, knobs, config, tuner capture) |
+| `cab.vhd` | Cabinet simulator: 512-tap FIR after the chain |
 | `booster.vhd`, `drive.vhd`, `tremolo.vhd`, `delay.vhd`, `wah.vhd`, `phaser.vhd`, `reverb.vhd` | The effects (`drive` is both distortion and overdrive) |
 | `sat_pkg.vhd` | Saturation helpers |
 | `codec.vhd` | WM8731: register setup over I²C, 24-bit I²S in/out |
@@ -39,7 +41,7 @@ HEX5/HEX4 show the first effect in the chain, HEX3..HEX0 and LEDR its knobs.
 | `sw/pedalctl.c` | CLI on the HPS that reads/writes the registers |
 | `sw/web/` | Web UI (static page + CGI calling `pedalctl`), served by busybox httpd |
 | `sim/fx_model.py` | Fixed-point models of the effects, property checks, WAV renders |
-| `sim/test_vhdl.py`, `sim/tb_fx.vhd`, `sim/tb_codec.vhd` | GHDL tests: codec against a WM8731 bus model; effects vs model, sample by sample |
+| `sim/test_vhdl.py`, `sim/tb_*.vhd` | GHDL tests: codec against a WM8731 bus model, register bank, effects + cab vs model sample by sample |
 
 ---
 
@@ -49,9 +51,12 @@ Registers at the start of the lightweight HPS-to-FPGA bridge (`0xFF200000`):
 
 | Offset | Register | |
 |--------|----------|-|
-| `0x00` | ID (RO) | `0x50ED0001` |
+| `0x00` | ID (RO) | `0x50ED0002` |
 | `0x04` | CHAIN | 8 slots × 4 bits, slot 0 = bits 3..0; value = effect id, `0xF` = empty |
 | `0x08 + 4·e` | PARAM[e] | bits 9..5 = knob A, bits 4..0 = knob B (0..31) |
+| `0x28` | CONFIG | bit 0 = mic input (0 = line), bit 1 = cabinet on |
+| `0x2C` | CAPTURE | write: capture the next 4096 input samples; read: bit 0 = done |
+| `0x30` | CAPDATA | read: next captured sample (signed); write: rewind |
 
 | Id | Effect | Knob A | Knob B |
 |----|--------|--------|--------|
@@ -69,10 +74,16 @@ On the board:
 ```sh
 pedalctl chain overdrive delay reverb   # signal goes through them in this order
 pedalctl param delay 12 20              # knob A, knob B
+pedalctl input mic                      # or line
+pedalctl cab on                         # or off
+pedalctl tune                           # {"hz":82.38,"note":"E2","cents":-1}
+pedalctl save lead                      # presets live in /home/root/presets
+pedalctl load lead
 pedalctl dump
 ```
 
-Or open `http://<board-ip>/` for the stompbox UI: drag to reorder, footswitch to bypass.
+Or open `http://<board-ip>/` for the web UI: stompboxes you drag to reorder and bypass, input and
+cabinet switches, presets and a tuner.
 
 ---
 
@@ -99,11 +110,13 @@ make deploy-web         # pedalctl + web UI + systemd service
 
 ```sh
 python3 sim/fx_model.py     # property checks on the models (level, LFO rate, stability...) + WAVs in sim/out/
-python3 sim/test_vhdl.py    # codec I2C/I2S, then every effect's VHDL vs its model, bit-exact, at 3 knob settings
+python3 sim/test_vhdl.py    # codec I2C/I2S, register bank, then every effect + the cab vs its model, bit-exact
+make -C sw test             # pitch detector on synthetic notes (runs on this machine)
 ```
 
 `test_vhdl.py` uses a local `ghdl` if there is one, otherwise the `ghdl/ghdl` Docker image (a few minutes).
 When changing an effect, change the model and the VHDL together and keep both tests passing.
+The cabinet's coefficients come from `cab_coefs()` in the model (`python3 sim/fx_model.py --vhdl` prints them).
 
 ---
 
