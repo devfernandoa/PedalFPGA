@@ -1,0 +1,13 @@
+[Unit]
+Description=PedalFPGA front panel (HPS_KEY cycles presets, LCD shows the name)
+
+[Service]
+ExecStart=/home/root/pedalctl panel
+# If the LCD shows nothing or is upside down / mirrored, try these:
+#Environment=PANEL_CONTRAST=24
+#Environment=PANEL_FLIP=1
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

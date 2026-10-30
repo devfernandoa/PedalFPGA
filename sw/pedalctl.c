@@ -16,7 +16,9 @@
  *   pedalctl volume <0..31>           output volume: 31 = 0 dB, 1.5 dB per step, 0 = mute
  *   pedalctl tune                     pitch of the input as JSON: {"hz":82.41,"note":"E2","cents":-3}
  *   pedalctl save|load|delete <name>  presets (chain + knobs + input + cab + volume) in PRESET_DIR
+ *   pedalctl panel                    front panel: HPS_KEY cycles presets, the LCD shows the name (runs forever)
  *   pedalctl pitchtest                check the pitch detector on synthetic notes (no FPGA needed)
+ *   pedalctl paneltest                print a sample LCD screen as text (no board needed)
  */
 #include <dirent.h>
 #include <fcntl.h>
@@ -53,6 +55,7 @@
 #define CAP_N  4096
 
 #define PRESET_DIR "/home/root/presets"
+#define CURRENT_FILE PRESET_DIR "/.current" /* name of the last preset loaded (survives power-off) */
 
 static const char *fx_names[N_FX] = {
     "booster", "distortion", "overdrive", "tremolo", "delay", "wah", "phaser", "reverb",
@@ -93,7 +96,7 @@ static int usage(void)
     fprintf(stderr,
             "usage: pedalctl id | dump | json | chain none | chain <fx>... | param <fx> <a> <b>\n"
             "                | input line|mic | cab on|off | volume <0..31> | tune\n"
-            "                | save|load|delete <name> | pitchtest\n"
+            "                | save|load|delete <name> | panel | pitchtest | paneltest\n"
             "  fx: booster distortion overdrive tremolo delay wah phaser reverb compressor chorus flanger (or 0..10)\n"
             "  a, b: 0..31;  name: 1..24 of a-z 0-9\n");
     return 2;
@@ -263,31 +266,376 @@ static int preset_load(volatile uint32_t *regs, const char *name)
     }
     for (int r = 1; r < N_REGS; r++)
         regs[r] = v[r];
+    FILE *c = fopen(CURRENT_FILE, "w"); /* so the panel and the next boot know which one is on */
+    if (c) {
+        fprintf(c, "%s\n", name);
+        fclose(c);
+    }
     return 0;
 }
 
 static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
-/* preset names as a JSON array, sorted */
-static void print_presets(void)
+#define MAX_PRESETS 256
+
+/* sorted preset names into names[] (caller frees), returns the count */
+static int list_presets(char **names)
 {
-    char *names[256];
     int n = 0;
     DIR *d = opendir(PRESET_DIR);
     if (d) {
         struct dirent *e;
-        while ((e = readdir(d)) && n < 256)
+        while ((e = readdir(d)) && n < MAX_PRESETS)
             if (valid_name(e->d_name))
                 names[n++] = strdup(e->d_name);
         closedir(d);
     }
     qsort(names, n, sizeof names[0], cmp_str);
+    return n;
+}
+
+/* preset names as a JSON array, sorted */
+static void print_presets(void)
+{
+    char *names[MAX_PRESETS];
+    int n = list_presets(names);
     printf("[");
     for (int i = 0; i < n; i++) {
         printf("%s\"%s\"", i ? "," : "", names[i]);
         free(names[i]);
     }
     printf("]");
+}
+
+static void read_current(char *buf, size_t n)
+{
+    buf[0] = '\0';
+    FILE *f = fopen(CURRENT_FILE, "r");
+    if (f) {
+        if (fgets(buf, (int)n, f))
+            buf[strcspn(buf, "\n")] = '\0';
+        fclose(f);
+    }
+    if (!valid_name(buf))
+        buf[0] = '\0';
+}
+
+/* ------------------------------------------------------------------ panel: one button + the LCD
+ * The "real pedal" front panel on the DE10-Standard: HPS_KEY cycles through the presets (in name
+ * order, wrapping), the 128x64 LCD shows the preset's name, its number and the chain. Both hang off
+ * the HPS: the button and the LCD's control lines are HPS GPIOs (sysfs), the LCD data goes through
+ * SPI master 0, driven here through its registers (this kernel has no spidev).
+ * The LCD is an ST7565-type controller; PANEL_FLIP=1 rotates it 180 degrees and PANEL_CONTRAST
+ * (0..63) sets the contrast, in case a module differs. */
+
+#define SPIM0_BASE 0xFFF00000u
+#define GPIO1_LABEL "ff709000.gpio" /* HPS GPIO29..57 */
+#define PIN_LCD_BK  (37 - 29)
+#define PIN_LCD_DC  (41 - 29)
+#define PIN_LCD_RST (44 - 29)
+#define PIN_KEY     (54 - 29)
+
+/* 5x7 glyphs, drawn for this project. Names are a-z0-9; they are shown in capitals. */
+static const char *const FONT_CHARS = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/>-+.:";
+static const char FONT[][7][6] = {
+    {"     ", "     ", "     ", "     ", "     ", "     ", "     "}, /* space */
+    {" ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### "}, /* 0 */
+    {"  #  ", " ##  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "}, /* 1 */
+    {" ### ", "#   #", "    #", "   # ", "  #  ", " #   ", "#####"}, /* 2 */
+    {"#####", "   # ", "  #  ", "   # ", "    #", "#   #", " ### "}, /* 3 */
+    {"   # ", "  ## ", " # # ", "#  # ", "#####", "   # ", "   # "}, /* 4 */
+    {"#####", "#    ", "#### ", "    #", "    #", "#   #", " ### "}, /* 5 */
+    {"  ## ", " #   ", "#    ", "#### ", "#   #", "#   #", " ### "}, /* 6 */
+    {"#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   "}, /* 7 */
+    {" ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### "}, /* 8 */
+    {" ### ", "#   #", "#   #", " ####", "    #", "   # ", " ##  "}, /* 9 */
+    {" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"}, /* A */
+    {"#### ", "#   #", "#   #", "#### ", "#   #", "#   #", "#### "}, /* B */
+    {" ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### "}, /* C */
+    {"#### ", "#   #", "#   #", "#   #", "#   #", "#   #", "#### "}, /* D */
+    {"#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"}, /* E */
+    {"#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    "}, /* F */
+    {" ### ", "#   #", "#    ", "# ###", "#   #", "#   #", " ####"}, /* G */
+    {"#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"}, /* H */
+    {" ### ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "}, /* I */
+    {"  ###", "   # ", "   # ", "   # ", "   # ", "#  # ", " ##  "}, /* J */
+    {"#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"}, /* K */
+    {"#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####"}, /* L */
+    {"#   #", "## ##", "# # #", "# # #", "#   #", "#   #", "#   #"}, /* M */
+    {"#   #", "#   #", "##  #", "# # #", "#  ##", "#   #", "#   #"}, /* N */
+    {" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "}, /* O */
+    {"#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "}, /* P */
+    {" ### ", "#   #", "#   #", "#   #", "# # #", "#  # ", " ## #"}, /* Q */
+    {"#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"}, /* R */
+    {" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "}, /* S */
+    {"#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "}, /* T */
+    {"#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "}, /* U */
+    {"#   #", "#   #", "#   #", "#   #", "#   #", " # # ", "  #  "}, /* V */
+    {"#   #", "#   #", "#   #", "# # #", "# # #", "# # #", " # # "}, /* W */
+    {"#   #", "#   #", " # # ", "  #  ", " # # ", "#   #", "#   #"}, /* X */
+    {"#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  "}, /* Y */
+    {"#####", "    #", "   # ", "  #  ", " #   ", "#    ", "#####"}, /* Z */
+    {"     ", "    #", "   # ", "  #  ", " #   ", "#    ", "     "}, /* / */
+    {"     ", " #   ", "  #  ", "   # ", "  #  ", " #   ", "     "}, /* > */
+    {"     ", "     ", "     ", "#####", "     ", "     ", "     "}, /* - */
+    {"     ", "  #  ", "  #  ", "#####", "  #  ", "  #  ", "     "}, /* + */
+    {"     ", "     ", "     ", "     ", "     ", " ##  ", " ##  "}, /* . */
+    {"     ", " ##  ", " ##  ", "     ", " ##  ", " ##  ", "     "}, /* : */
+};
+
+static uint8_t fb[8][128]; /* 8 pages of 8 rows; bit 0 = top row of the page */
+
+static void px(int x, int y)
+{
+    if (x >= 0 && x < 128 && y >= 0 && y < 64)
+        fb[y / 8][x] |= (uint8_t)(1u << (y % 8));
+}
+
+/* text at (x, y) with each font pixel drawn s x s; returns the width drawn */
+static int draw_text(int x, int y, const char *t, int s)
+{
+    int x0 = x;
+    for (; *t; t++) {
+        int c = *t >= 'a' && *t <= 'z' ? *t - 32 : *t;
+        const char *pos = strchr(FONT_CHARS, c);
+        int g = pos && c ? (int)(pos - FONT_CHARS) : 0;
+        for (int r = 0; r < 7; r++)
+            for (int col = 0; col < 5; col++)
+                if (FONT[g][r][col] == '#')
+                    for (int dy = 0; dy < s; dy++)
+                        for (int dx = 0; dx < s; dx++)
+                            px(x + col * s + dx, y + r * s + dy);
+        x += 6 * s;
+    }
+    return x - x0 - s;
+}
+
+static int text_width(const char *t, int s) { return (int)strlen(t) * 6 * s - s; }
+
+/* the screen: "PRESET n/N" and CAB/volume on top, the name as big as it fits, the chain at the bottom */
+static void render(const char *name, int idx, int count, uint32_t chain, uint32_t cfg, uint32_t vol)
+{
+    static const char *abbr[N_FX] = {"BST", "DST", "OD", "TRM", "DLY", "WAH", "PHS", "REV", "CMP", "CHO", "FLG"};
+    char line[64];
+    memset(fb, 0, sizeof fb);
+
+    if (count)
+        snprintf(line, sizeof line, "PRESET %d/%d", idx + 1, count);
+    else
+        snprintf(line, sizeof line, "NO PRESETS");
+    draw_text(0, 0, line, 1);
+    snprintf(line, sizeof line, "%s%s", cfg & CFG_CAB ? "CAB " : "", vol == 0 ? "MUTE" : "");
+    draw_text(128 - text_width(line, 1), 0, line, 1);
+    for (int x = 0; x < 128; x++)
+        px(x, 9);
+
+    const char *big = name[0] ? name : (count ? "-" : "SAVE ONE");
+    int s = 3;
+    while (s > 1 && text_width(big, s) > 128)
+        s--;
+    char cut[22];
+    snprintf(cut, sizeof cut, "%s", big); /* 21 characters fit at size 1 */
+    draw_text((128 - text_width(cut, s)) / 2, 33 - 7 * s / 2, cut, s);
+
+    line[0] = '\0';
+    for (int slot = 0; slot < 8; slot++) {
+        unsigned fx = (chain >> (4 * slot)) & 0xF;
+        if (fx < N_FX)
+            snprintf(line + strlen(line), sizeof line - strlen(line), "%s%s", line[0] ? ">" : "", abbr[fx]);
+    }
+    if (!line[0])
+        snprintf(line, sizeof line, "CLEAN");
+    line[21] = '\0';
+    draw_text((128 - text_width(line, 1)) / 2, 57, line, 1);
+}
+
+/* host-side check of the screen layout: prints the framebuffer as text */
+static void print_fb(void)
+{
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 128; x++)
+            putchar(fb[y / 8][x] & (1u << (y % 8)) ? '#' : '.');
+        putchar('\n');
+    }
+}
+
+static int gpio_base(void)
+{
+    DIR *d = opendir("/sys/class/gpio");
+    struct dirent *e;
+    int base = -1;
+    while (d && (e = readdir(d))) {
+        char path[300], buf[64] = "";
+        if (strncmp(e->d_name, "gpiochip", 8))
+            continue;
+        snprintf(path, sizeof path, "/sys/class/gpio/%s/label", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (f && fgets(buf, sizeof buf, f) && strncmp(buf, GPIO1_LABEL, strlen(GPIO1_LABEL)) == 0)
+            base = atoi(e->d_name + 8);
+        if (f)
+            fclose(f);
+    }
+    if (d)
+        closedir(d);
+    return base;
+}
+
+static void write_file(const char *path, const char *v)
+{
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fputs(v, f);
+        fclose(f);
+    }
+}
+
+/* export an HPS GPIO1 pin; returns an open fd on its value file */
+static int gpio_open(int base, int pin, const char *dir)
+{
+    char path[64], num[16];
+    snprintf(num, sizeof num, "%d", base + pin);
+    snprintf(path, sizeof path, "/sys/class/gpio/gpio%d/direction", base + pin);
+    if (access(path, F_OK))
+        write_file("/sys/class/gpio/export", num);
+    write_file(path, dir);
+    snprintf(path, sizeof path, "/sys/class/gpio/gpio%d/value", base + pin);
+    return open(path, O_RDWR);
+}
+
+static void gpio_set(int fd, int v) { (void)!pwrite(fd, v ? "1" : "0", 1, 0); }
+
+static int gpio_get(int fd)
+{
+    char c = '1';
+    (void)!pread(fd, &c, 1, 0);
+    return c == '1';
+}
+
+static void sleep_ms(int ms)
+{
+    struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
+    nanosleep(&t, NULL);
+}
+
+/* SPI master 0 (DesignWare SSI): mode 3, 8-bit frames, transmit only */
+enum { SPI_CTRLR0 = 0x00, SPI_SSIENR = 0x08, SPI_SER = 0x10, SPI_BAUDR = 0x14, SPI_SR = 0x28, SPI_DR = 0x60 };
+static volatile uint32_t *spi;
+static int fd_dc;
+
+static void spi_init(void)
+{
+    spi[SPI_SSIENR / 4] = 0;
+    spi[SPI_CTRLR0 / 4] = (1u << 8) | (1u << 7) | (1u << 6) | 7; /* TMOD tx-only, SCPOL, SCPH, 8 bits */
+    spi[SPI_BAUDR / 4] = 64;                                    /* spi_m_clk / 64: a few MHz */
+    spi[SPI_SER / 4] = 1;
+    spi[SPI_SSIENR / 4] = 1;
+}
+
+static void spi_send(int dc, const uint8_t *b, int n)
+{
+    while ((spi[SPI_SR / 4] & 5) != 4) /* wait: TX FIFO empty and not busy, before switching D/C */
+        ;
+    gpio_set(fd_dc, dc);
+    for (int i = 0; i < n; i++) {
+        while (!(spi[SPI_SR / 4] & 2)) /* TX FIFO not full */
+            ;
+        spi[SPI_DR / 4] = b[i];
+    }
+    while ((spi[SPI_SR / 4] & 5) != 4)
+        ;
+}
+
+static void lcd_flush(int flip)
+{
+    for (int p = 0; p < 8; p++) {
+        int col = flip ? 4 : 0; /* the controller has 132 columns; rotated, the visible ones start at 4 */
+        uint8_t c[3] = {(uint8_t)(0xB0 | p), (uint8_t)(0x10 | (col >> 4)), (uint8_t)(col & 0xF)};
+        spi_send(0, c, 3);
+        spi_send(1, fb[p], 128);
+    }
+}
+
+static int panel(volatile uint32_t *regs)
+{
+    int base = gpio_base();
+    if (base < 0) {
+        fprintf(stderr, "no %s in /sys/class/gpio\n", GPIO1_LABEL);
+        return 1;
+    }
+    int fd_bk = gpio_open(base, PIN_LCD_BK, "out"), fd_rst = gpio_open(base, PIN_LCD_RST, "out");
+    int fd_key = gpio_open(base, PIN_KEY, "in");
+    fd_dc = gpio_open(base, PIN_LCD_DC, "out");
+    if (fd_bk < 0 || fd_rst < 0 || fd_key < 0 || fd_dc < 0) {
+        perror("gpio");
+        return 1;
+    }
+    int mfd = open("/dev/mem", O_RDWR | O_SYNC);
+    spi = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, mfd, SPIM0_BASE);
+    close(mfd);
+    if (spi == MAP_FAILED) {
+        perror("mmap spi");
+        return 1;
+    }
+    const char *e = getenv("PANEL_FLIP");
+    int flip = e && atoi(e);
+    e = getenv("PANEL_CONTRAST");
+    int contrast = e ? atoi(e) & 63 : 24;
+
+    spi_init();
+    gpio_set(fd_bk, 1);
+    gpio_set(fd_rst, 0);
+    sleep_ms(5);
+    gpio_set(fd_rst, 1);
+    sleep_ms(5);
+    uint8_t init[] = {0xA2,                    /* bias 1/9 */
+                      (uint8_t)(flip ? 0xA1 : 0xA0), (uint8_t)(flip ? 0xC0 : 0xC8), /* orientation */
+                      0x40,                    /* start line 0 */
+                      0x2F,                    /* booster, regulator, follower on */
+                      0x26,                    /* regulator resistor ratio */
+                      0x81, (uint8_t)contrast, /* contrast */
+                      0xA6, 0xA4, 0xAF};       /* normal, from RAM, display on */
+    spi_send(0, init, sizeof init);
+
+    /* back to the preset in use at power-off */
+    char cur[32], shown[32] = "?";
+    read_current(cur, sizeof cur);
+    if (cur[0])
+        preset_load(regs, cur);
+
+    int idle = gpio_get(fd_key), was = 0, stable = 0, last_sig = -1;
+    for (int tick = 0;; tick++) {
+        /* button: debounced over 3 reads (30 ms); acts on press */
+        int now = gpio_get(fd_key) != idle;
+        stable = now == was ? stable + 1 : 0;
+        was = now;
+        int pressed = now && stable == 2;
+
+        char *names[MAX_PRESETS];
+        int n = 0, idx = -1;
+        if (pressed || tick % 25 == 0) { /* the web UI may change things: re-check every 250 ms */
+            n = list_presets(names);
+            read_current(cur, sizeof cur);
+            for (int i = 0; i < n; i++)
+                if (strcmp(names[i], cur) == 0)
+                    idx = i;
+            if (pressed && n) {
+                idx = (idx + 1) % n;
+                preset_load(regs, names[idx]);
+                snprintf(cur, sizeof cur, "%s", names[idx]);
+            }
+            uint32_t chain = regs[REG_CHAIN], cfg = regs[REG_CONFIG], vol = regs[REG_VOLUME] & 31;
+            int sig = (int)(chain ^ (cfg << 3) ^ (vol << 7) ^ ((uint32_t)idx << 13) ^ ((uint32_t)n << 21));
+            if (pressed || sig != last_sig || strcmp(shown, cur)) {
+                render(idx >= 0 ? cur : "", idx, n, chain, cfg, vol);
+                lcd_flush(flip);
+                last_sig = sig;
+                snprintf(shown, sizeof shown, "%s", cur);
+            }
+            for (int i = 0; i < n; i++)
+                free(names[i]);
+        }
+        sleep_ms(10);
+    }
 }
 
 /* ------------------------------------------------------------------ main */
@@ -299,6 +647,11 @@ int main(int argc, char **argv)
     const char *cmd = argv[1];
     if (strcmp(cmd, "pitchtest") == 0)
         return pitchtest();
+    if (strcmp(cmd, "paneltest") == 0) { /* the LCD screen for a sample preset, as text */
+        render("crunchlead", 2, 7, 0xFFFFF7A2u, CFG_CAB, 31);
+        print_fb();
+        return 0;
+    }
 
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) {
@@ -395,6 +748,8 @@ int main(int argc, char **argv)
         if (v < 0)
             return usage();
         regs[REG_VOLUME] = (uint32_t)v;
+    } else if (strcmp(cmd, "panel") == 0) {
+        ret = panel(regs);
     } else if (strcmp(cmd, "tune") == 0) {
         ret = tune(regs);
     } else if (strcmp(cmd, "save") == 0 && argc == 3) {

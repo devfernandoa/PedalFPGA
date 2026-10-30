@@ -87,6 +87,12 @@ pedalctl load lead
 pedalctl dump
 ```
 
+**Front panel** (how the finished pedal would work): press **HPS KEY** on the board to step to the
+next preset (in name order, wrapping around); the LCD shows its name, its number and the chain. The
+pedal comes back on the last preset after a power cycle. It runs as the `pedal-panel` service
+(`pedalctl panel`); if the LCD is blank, mirrored or upside down, set `PANEL_CONTRAST` / `PANEL_FLIP`
+in `sw/pedal-panel.service`. `pedalctl paneltest` prints a sample screen on any machine.
+
 Or open `http://<board-ip>/` for the web UI: stompboxes you drag to reorder and bypass, input and
 cabinet switches, presets and a tuner.
 
