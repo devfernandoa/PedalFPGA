@@ -1,6 +1,6 @@
 -- Runs one effect over the samples in IN_FILE (one integer per line) and writes its output to OUT_FILE.
 -- Driven by sim/test_vhdl.py, which compares the result with sim/fx_model.py sample by sample.
--- FX uses the effect ids of pedal_regs.vhd. Timing matches the chain in pedal_core.vhd:
+-- FX uses the effect ids of pedal_regs.vhd; 8 is the cabinet (cab.vhd). Timing matches the chain in pedal_core.vhd:
 -- input held SLOT_WAIT+1 cycles, one ce pulse, output read after the registers update.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -18,6 +18,7 @@ architecture sim of tb_fx is
     signal ka, kb : std_logic_vector(4 downto 0);
     signal mult : std_logic_vector(15 downto 0);
     signal done : boolean := false;
+    signal fx_done : std_logic := '0';
 begin
     clk <= not clk after 10 ns when not done;
     ka <= std_logic_vector(to_unsigned(A, 5));
@@ -47,6 +48,10 @@ begin
         dut: entity work.reverb port map (clk => clk, ce => ce, sample_in => x, room_size => ka, damping => kb, sample_out => y);
     end generate;
 
+    g8: if FX = 8 generate   -- not a chain slot: the cabinet stage after the chain
+        dut: entity work.cab port map (clk => clk, ce => ce, sample_in => x, sample_out => y, done => fx_done);
+    end generate;
+
     process
         file fin  : text open read_mode is IN_FILE;
         file fout : text open write_mode is OUT_FILE;
@@ -61,6 +66,9 @@ begin
             ce <= '1';
             wait until rising_edge(clk);
             ce <= '0';
+            if FX = 8 then
+                wait until rising_edge(clk) and fx_done = '1';
+            end if;
             wait until rising_edge(clk);
             write(lout, to_integer(signed(y)));
             writeline(fout, lout);

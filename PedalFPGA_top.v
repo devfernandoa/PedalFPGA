@@ -60,6 +60,30 @@ module PedalFPGA_top (
 
     wire [31:0] pedal_chain;
     wire [79:0] pedal_params;
+    wire [1:0]  pedal_config;
+    wire [15:0] cap_sample;
+    wire        cap_valid;
+
+    // Codec master clock: 12.288 MHz = 256 x 48 kHz, so the sample rate is exactly 48 kHz
+    // (50 MHz / 4 would give 48.83 kHz). Fractional PLL, so the output is within a few ppm.
+    altera_pll #(
+        .fractional_vco_multiplier ("true"),
+        .reference_clock_frequency ("50.0 MHz"),
+        .operation_mode            ("direct"),
+        .number_of_clocks          (1),
+        .output_clock_frequency0   ("12.288000 MHz"),
+        .phase_shift0              ("0 ps"),
+        .duty_cycle0               (50),
+        .pll_type                  ("General"),
+        .pll_subtype               ("General")
+    ) xck_pll (
+        .refclk   (CLOCK_50),
+        .rst      (1'b0),
+        .outclk   (AUD_XCK),
+        .locked   (),
+        .fboutclk (),
+        .fbclk    (1'b0)
+    );
 
     // The HPS I/O must all stay connected: the preloader on the SD card configures every one of them.
     soc_system u0 (
@@ -67,6 +91,9 @@ module PedalFPGA_top (
         .reset_reset_n  (1'b1),
         .pedal_chain    (pedal_chain),
         .pedal_params   (pedal_params),
+        .pedal_config   (pedal_config),
+        .pedal_cap_sample (cap_sample),
+        .pedal_cap_valid  (cap_valid),
 
         .memory_mem_a       (HPS_DDR3_ADDR),
         .memory_mem_ba      (HPS_DDR3_BA),
@@ -165,7 +192,9 @@ module PedalFPGA_top (
         .CLOCK_50      (CLOCK_50),
         .chain         (pedal_chain),
         .params        (pedal_params),
-        .AUD_XCK       (AUD_XCK),
+        .cfg           (pedal_config),
+        .cap_sample    (cap_sample),
+        .cap_valid     (cap_valid),
         .AUD_BCLK      (AUD_BCLK),
         .AUD_ADCLRCK   (AUD_ADCLRCK),
         .AUD_DACLRCK   (AUD_DACLRCK),

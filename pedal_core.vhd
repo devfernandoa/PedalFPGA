@@ -9,8 +9,10 @@ entity pedal_core is
 		--====CONTROL (pedal_regs)====--
 		chain 		:  in  std_logic_vector(31 downto 0);
 		params 		:  in  std_logic_vector(79 downto 0);
+		cfg 		:  in  std_logic_vector(1 downto 0);   -- CONFIG: bit 0 mic input, bit 1 cab on
+		cap_sample 	:  out std_logic_vector(15 downto 0);  -- input samples for the tuner capture
+		cap_valid 	:  out std_logic;
 		--====AUDIO====--
-		AUD_XCK 	:  out std_logic;
 		AUD_BCLK 	:  in  std_logic;
 		AUD_ADCLRCK 	:  in  std_logic;
 		AUD_DACLRCK 	:  in  std_logic;
@@ -133,6 +135,9 @@ architecture a of pedal_core is
     signal wait_cnt   : integer range 0 to SLOT_WAIT := 0;
     signal fx_ce      : std_logic_vector(7 downto 0) := (others => '0');
     signal in_ready_d : std_logic := '0';
+    -- Cabinet stage after the chain
+    signal cab_ce, cab_done : std_logic := '0';
+    signal cab_y : std_logic_vector(15 downto 0);
 
     function seg7(i : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
@@ -224,7 +229,7 @@ begin
     
 	inst_cfg: entity work.codec_cfg
 		port map(	clk => CLOCK_50,
-				aud_xck => AUD_XCK,
+				mic => cfg(0),
 				i2c_sclk => FPGA_I2C_SCLK,
 				i2c_sdat => FPGA_I2C_SDAT,
 				done => open	);
@@ -289,6 +294,7 @@ begin
             if rising_edge(CLOCK_50) then
                 fx := to_integer(unsigned(chain_sh(3 downto 0)));
                 fx_ce <= (others => '0');
+                cab_ce <= '0';
                 in_ready_d <= in_ready;
                 case ch_state is
                     when CH_IDLE =>
@@ -301,7 +307,11 @@ begin
                         end if;
                     when CH_WAIT =>
                         if slot = 8 then
-                            sample_out <= chain_x;
+                            if cfg(1) = '1' then
+                                cab_ce <= '1';       -- sample_out comes from the cab ~515 cycles later
+                            else
+                                sample_out <= chain_x;
+                            end if;
                             ch_state   <= CH_IDLE;
                         elsif fx >= 8 then           -- empty slot
                             chain_sh <= x"F" & chain_sh(31 downto 4);
@@ -321,8 +331,18 @@ begin
                         slot     <= slot + 1;
                         ch_state <= CH_WAIT;
                 end case;
+                if cab_done = '1' and cfg(1) = '1' then
+                    sample_out <= cab_y;
+                end if;
             end if;
         end process;
+
+        inst_cab : entity work.cab
+        port map (clk => CLOCK_50, ce => cab_ce, sample_in => chain_x, sample_out => cab_y, done => cab_done);
+
+        -- tuner capture: the input after the DC blocker, before the noise gate (quiet notes still count)
+        cap_sample <= sample_dc;
+        cap_valid  <= in_ready_d;
 
         inst_booster : booster
         port map (	

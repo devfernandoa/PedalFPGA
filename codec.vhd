@@ -1,9 +1,8 @@
 -- WM8731 audio codec on the DE10-Standard.
---   codec_cfg: XCK (master clock) + register setup over I2C, once after power-up.
+--   codec_cfg: register setup over I2C after power-up; rewrites the input select when mic changes.
 --   codec_i2s: 24-bit samples in from the ADC and out to the DAC.
--- The codec is the I2S master (it drives BCLK and the LR clocks), left-justified, 24-bit, line in.
--- XCK = 50 MHz / 4 = 12.5 MHz, so "48 kHz" is really 12.5e6 / 256 = 48.83 kHz (1.7 % fast).
--- ponytail: a PLL at 12.288 MHz would give exactly 48 kHz if the effects' rates ever need to be exact.
+-- The codec is the I2S master (it drives BCLK and the LR clocks), left-justified, 24-bit.
+-- XCK (12.288 MHz -> exactly 48 kHz) comes from a PLL in PedalFPGA_top.v.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -12,7 +11,7 @@ entity codec_cfg is
     generic (WAKE : integer := 2_500_000);   -- 50 ms after power-up (and after a NAK) before talking
     port (
         clk      : in    std_logic;   -- 50 MHz
-        aud_xck  : out   std_logic;
+        mic      : in    std_logic;   -- '1' = mic input with +20 dB boost, '0' = line in
         i2c_sclk : out   std_logic;
         i2c_sdat : inout std_logic;
         done     : out   std_logic    -- every register written and acknowledged
@@ -25,20 +24,20 @@ architecture rtl of codec_cfg is
     type words_t is array (natural range <>) of std_logic_vector(15 downto 0);
     constant WORDS : words_t := (
         x"1E00",   -- R15 reset
-        x"0C72",   -- R6  power: mic, oscillator, CLKOUT and outputs off
+        x"0C70",   -- R6  power: oscillator, CLKOUT and outputs off
         x"0117",   -- R0  line in L+R: 0 dB, unmuted
         x"0579",   -- R2  headphone out L+R: 0 dB
-        x"0812",   -- R4  analog path: line in -> ADC, DAC -> out, mic muted, no bypass
+        x"0812",   -- R4  analog path (see r4): line in -> ADC, DAC -> out, mic muted, no bypass
         x"0A00",   -- R5  digital path: ADC high-pass on, DAC unmuted, no de-emphasis
         x"0E49",   -- R7  format: master, 24-bit, left-justified
         x"1000",   -- R8  sampling: normal mode, 256 fs, 48 kHz
         x"1201",   -- R9  active
-        x"0C62");  -- R6  outputs on
+        x"0C60");  -- R6  outputs on
     constant ADDR : std_logic_vector(7 downto 0) := x"34";   -- 0011010 + write
+    constant R4_WORD : integer := 4;
 
     constant QUARTER : integer := 125;        -- 50 MHz / 125 / 4 = 100 kHz SCL
 
-    signal xck_div : unsigned(1 downto 0) := "00";
     signal tick_cnt : integer range 0 to QUARTER - 1 := 0;
     signal wait_cnt : integer range 0 to WAKE := WAKE;
     signal word  : integer range 0 to WORDS'length := 0;
@@ -47,26 +46,29 @@ architecture rtl of codec_cfg is
     signal scl   : std_logic := '1';
     signal sda   : std_logic := '1';             -- '0' pulls SDA low, '1' releases it
     signal frame : std_logic_vector(23 downto 0);
+    signal r4    : std_logic_vector(15 downto 0);
+    signal mic_cur, mic_sent : std_logic := '0';   -- input being written / last written to R4
+    signal single : std_logic := '0';              -- rewriting R4 only
 begin
-    process (clk)
-    begin
-        if rising_edge(clk) then
-            xck_div <= xck_div + 1;
-        end if;
-    end process;
-    aud_xck <= xck_div(1);
-
-    frame <= ADDR & WORDS(word) when word < WORDS'length else (others => '1');
+    r4 <= x"0815" when mic_cur = '1' else x"0812";   -- mic: INSEL, +20 dB boost, unmuted
+    frame <= ADDR & r4 when word = R4_WORD else
+             ADDR & WORDS(word) when word < WORDS'length else (others => '1');
 
     process (clk)
         variable bit_i : integer range 0 to 8;
         variable nak   : boolean;
     begin
         if rising_edge(clk) then
+            if word /= R4_WORD then
+                mic_cur <= mic;                               -- held while R4 is on the wire
+            end if;
             if wait_cnt /= 0 then
                 wait_cnt <= wait_cnt - 1;
-            elsif word = WORDS'length then
-                null;                                         -- all written
+            elsif word = WORDS'length then                    -- all written; the input changed?
+                if mic_cur /= mic_sent then
+                    word <= R4_WORD;
+                    single <= '1';
+                end if;
             elsif tick_cnt /= QUARTER - 1 then
                 tick_cnt <= tick_cnt + 1;
             else
@@ -101,7 +103,7 @@ begin
                 end if;
 
                 if nak then                                   -- codec not listening yet: wait, start over
-                    word <= 0; slot <= 0; q <= 0;
+                    word <= 0; slot <= 0; q <= 0; single <= '0';
                     scl <= '1'; sda <= '1';
                     wait_cnt <= WAKE;
                 elsif q /= 3 then
@@ -112,7 +114,15 @@ begin
                         slot <= slot + 1;
                     else
                         slot <= 0;
-                        word <= word + 1;
+                        if word = R4_WORD then
+                            mic_sent <= mic_cur;
+                        end if;
+                        if single = '1' then
+                            word <= WORDS'length;
+                            single <= '0';
+                        else
+                            word <= word + 1;
+                        end if;
                     end if;
                 end if;
             end if;

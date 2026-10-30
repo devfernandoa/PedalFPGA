@@ -20,7 +20,11 @@ architecture sim of tb_codec is
     signal sda_ack  : std_logic := 'Z';
     signal cfg_done : std_logic;
     type words_t is array (natural range <>) of std_logic_vector(15 downto 0);
-    constant EXPECT : words_t := (x"1E00", x"0C72", x"0117", x"0579", x"0812", x"0A00", x"0E49", x"1000", x"1201", x"0C62");
+    -- power-up sequence, then (after done) switching to the mic rewrites R4 alone
+    constant EXPECT : words_t := (x"1E00", x"0C70", x"0117", x"0579", x"0812", x"0A00", x"0E49", x"1000", x"1201", x"0C60",
+                                  x"0815");
+    signal mic : std_logic := '0';
+    signal i2c_ok : boolean := false;
 
     -- I2S
     signal bclk, lrck : std_logic := '0';
@@ -38,7 +42,13 @@ begin
     clk <= not clk after 10 ns when not done_sim;
 
     cfg: entity work.codec_cfg generic map (WAKE => 1000)
-        port map (clk => clk, aud_xck => open, i2c_sclk => scl, i2c_sdat => sda, done => cfg_done);
+        port map (clk => clk, mic => mic, i2c_sclk => scl, i2c_sdat => sda, done => cfg_done);
+    process
+    begin
+        wait until cfg_done = '1';
+        mic <= '1';
+        wait;
+    end process;
     sda <= 'H';            -- board pull-up
     sda <= sda_ack;
 
@@ -76,7 +86,8 @@ begin
                 if words = EXPECT'length then
                     wait for 50 us;
                     assert cfg_done = '1' report "I2C: done not set" severity failure;
-                    report "I2C ok: " & integer'image(words) & " words, retried after a NAK";
+                    i2c_ok <= true;
+                    report "I2C ok: " & integer'image(words) & " words, retried after a NAK, mic switch rewrote R4";
                     wait;
                 end if;
             end if;
@@ -112,8 +123,8 @@ begin
         end loop;
         assert rx_count >= 38 report "I2S: too few ADC words" severity failure;
         report "I2S ok: " & integer'image(rx_count) & " ADC words, DAC words match";
-        wait for 4 ms;                                   -- let the I2C side finish (~3.3 ms)
-        assert cfg_done = '1' report "I2C never finished" severity failure;
+        wait for 4 ms;                                   -- let the I2C side finish (~3.6 ms)
+        assert i2c_ok report "I2C never finished" severity failure;
         done_sim <= true;
         wait;
     end process;

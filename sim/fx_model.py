@@ -190,6 +190,61 @@ def calibrate(sig):
         p['comp'] = [min(65535, round(4096 * clean / rms(drive(sig, a, 16, p, comp=4096)))) for a in range(32)]
 
 
+# ------------------------------------------------------------------ cabinet simulator
+CAB_TAPS = 512                                            # 10.7 ms; the FIR does one tap per 50 MHz cycle
+
+
+def biquad(kind, f0, q, gain_db=0.0):
+    """RBJ cookbook biquad -> (b, a), normalized."""
+    w = 2 * math.pi * f0 / FS
+    al, cw, A = math.sin(w) / (2 * q), math.cos(w), 10 ** (gain_db / 40)
+    if kind == 'hp':
+        b = [(1 + cw) / 2, -(1 + cw), (1 + cw) / 2]
+        a = [1 + al, -2 * cw, 1 - al]
+    elif kind == 'lp':
+        b = [(1 - cw) / 2, 1 - cw, (1 - cw) / 2]
+        a = [1 + al, -2 * cw, 1 - al]
+    else:                                                 # peak
+        b = [1 + al * A, -2 * cw, 1 - al * A]
+        a = [1 + al / A, -2 * cw, 1 - al / A]
+    return [v / a[0] for v in b], [v / a[0] for v in a]
+
+
+def cab_ir():
+    """An original 'closed-back 2x12' voicing, not a measured cabinet: tight low end with a bump at
+    the speaker resonance, a scooped low-mid, presence around 2.5 kHz and a steep roll-off above
+    5 kHz (what removes the fizz from distortion). The biquad cascade's impulse response, faded out
+    over the last 64 taps, in Q15."""
+    stages = [biquad('hp', 85, 0.8), biquad('peak', 110, 1.2, 4), biquad('peak', 500, 0.9, -4),
+              biquad('peak', 2500, 1.0, 4), biquad('lp', 5000, 0.7), biquad('lp', 5000, 0.7),
+              biquad('lp', 7000, 0.6)]
+    h = np.zeros(CAB_TAPS)
+    h[0] = 1.0
+    for b, a in stages:
+        y, x1, x2, y1, y2 = np.zeros(CAB_TAPS), 0.0, 0.0, 0.0, 0.0
+        for n, x in enumerate(h):
+            y[n] = b[0] * x + b[1] * x1 + b[2] * x2 - a[1] * y1 - a[2] * y2
+            x1, x2, y1, y2 = x, x1, y[n], y1
+        h = y
+    h[-64:] *= 0.5 * (1 + np.cos(np.linspace(0, math.pi, 64)))
+    return h
+
+
+def cab(xs, coefs):
+    """FIR, as cab.vhd: 48-bit accumulator, >> 15, saturate (int64 convolution is exact here)."""
+    acc = np.convolve(np.array(xs, dtype=np.int64), np.array(coefs, dtype=np.int64))[:len(xs)]
+    return [sat16(int(v) >> 15) for v in acc]
+
+
+def cab_coefs(sig):
+    """Scale the IR so a distorted guitar comes out as loud through the cab as without it."""
+    h = cab_ir()
+    d = drive(sig, 16, 16, DIST)
+    y = np.convolve(d, h)[:len(d)]
+    k = rms(d) / rms(y)
+    return [int(round(v * k * 32768)) for v in h]
+
+
 # ------------------------------------------------------------------ old effects (for before/after WAVs)
 def old_distortion(xs, a, b, soft=False):
     thr = 3000 - 95 * a
@@ -324,6 +379,15 @@ def check(sig, outdir):
     write_wav(outdir / 'reverb.wav', reverb(sig, 16, 16))
     write_wav(outdir / 'reverb_big.wav', reverb(sig, 28, 6))
 
+    # cab: same loudness on a distorted guitar, much less energy above 6 kHz
+    c = cab_coefs(sig)
+    d = drive(sig, 16, 16, DIST)
+    y = cab(d, c)
+    hi = lambda v: np.sum(np.abs(np.fft.rfft(v)[int(6000 * len(v) / FS):]) ** 2) / np.sum(np.abs(np.fft.rfft(v)) ** 2)
+    print(f'cab        level vs no cab (distortion): {db(rms(y), rms(d)):+.1f} dB, energy above 6 kHz {hi(d):.1%} -> {hi(y):.1%}')
+    assert abs(db(rms(y), rms(d))) < 1.5 and hi(y) < hi(d) / 10
+    write_wav(outdir / 'distortion_cab.wav', y)
+
 
 def old_wah(xs):
     bp = lp = 0
@@ -336,7 +400,7 @@ def old_wah(xs):
     return out
 
 
-def vhdl_tables():
+def vhdl_tables(sig):
     def arr(name, vals):
         rows = [', '.join(str(v) for v in vals[i:i + 8]) for i in range(0, 32, 8)]
         return f'    constant {name} : int_table := (\n        ' + ',\n        '.join(rows) + ');'
@@ -347,6 +411,8 @@ def vhdl_tables():
     print(arr('DIST_COMP', DIST['comp']))
     print(arr('TREM_INC', TREM_INC))
     print(arr('PHS_INC', PHS_INC))
+    c = cab_coefs(sig)
+    print('    constant COEF : coef_t := (\n' + ',\n'.join('        ' + ', '.join(f'{v:5d}' for v in c[i:i + 16]) for i in range(0, CAB_TAPS, 16)) + ');')
     print(f'-- OD hp/lp {OD["hp"]}/{OD["lp"]}  DIST hp/lp {DIST["hp"]}/{DIST["lp"]}  DLY_LP {DLY_LP}  WAH att/rel {WAH_ATT}/{WAH_REL}')
 
 
@@ -354,7 +420,7 @@ if __name__ == '__main__':
     sig = riff()
     calibrate(sig)
     if '--vhdl' in sys.argv:
-        vhdl_tables()
+        vhdl_tables(sig)
     else:
         out = Path(__file__).parent / 'out'
         out.mkdir(exist_ok=True)
