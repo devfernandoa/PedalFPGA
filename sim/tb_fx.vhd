@@ -1,6 +1,6 @@
 -- Runs one effect over the samples in IN_FILE (one integer per line) and writes its output to OUT_FILE.
 -- Driven by sim/test_vhdl.py, which compares the result with sim/fx_model.py sample by sample.
--- FX uses the effect ids of pedal_regs.vhd; 8 is the cabinet (cab.vhd). Timing matches the chain in pedal_core.vhd:
+-- FX uses the effect ids of pedal_regs.vhd; 15 is the cabinet (cab.vhd). Timing matches the chain in pedal_core.vhd:
 -- input held SLOT_WAIT+1 cycles, one ce pulse, output read after the registers update.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -48,7 +48,14 @@ begin
         dut: entity work.reverb port map (clk => clk, ce => ce, sample_in => x, room_size => ka, damping => kb, sample_out => y);
     end generate;
 
-    g8: if FX = 8 generate   -- not a chain slot: the cabinet stage after the chain
+    g8: if FX = 8 generate
+        dut: entity work.compressor port map (clk => clk, ce => ce, sample_in => x, sustain => ka, level_k => kb, sample_out => y);
+    end generate;
+    g9: if FX = 9 or FX = 10 generate
+        dut: entity work.moddelay generic map (FLANGER => FX = 10)
+            port map (clk => clk, ce => ce, sample_in => x, rate => ka, depth => kb, sample_out => y);
+    end generate;
+    g15: if FX = 15 generate   -- not a chain slot: the cabinet stage after the chain
         dut: entity work.cab port map (clk => clk, ce => ce, sample_in => x, sample_out => y, done => fx_done);
     end generate;
 
@@ -66,7 +73,7 @@ begin
             ce <= '1';
             wait until rising_edge(clk);
             ce <= '0';
-            if FX = 8 then
+            if FX = 15 then
                 wait until rising_edge(clk) and fx_done = '1';
             end if;
             wait until rising_edge(clk);

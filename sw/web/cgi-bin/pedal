@@ -1,9 +1,9 @@
 #!/bin/sh
 # Web UI backend, run by busybox httpd as CGI. Applies at most one change, then returns the state:
-#   /cgi-bin/pedal                       -> {"chain":[...],"params":{...},"input":"line","cab":false,"presets":[...]}
+#   /cgi-bin/pedal                       -> {"chain":[...],"params":{...},"input":"line","cab":false,"volume":31,"presets":[...]}
 #   /cgi-bin/pedal?chain=overdrive+delay  (or chain=none)
 #   /cgi-bin/pedal?param=delay+24+20
-#   /cgi-bin/pedal?input=mic   ?cab=on   ?save=name   ?load=name   ?delete=name
+#   /cgi-bin/pedal?input=mic   ?cab=on   ?volume=24   ?save=name   ?load=name   ?delete=name
 #   /cgi-bin/pedal?tune                  -> {"hz":82.41,"note":"E2","cents":-3} instead of the state
 # pedalctl validates every name/number; anything outside [a-z0-9+=] is ignored before it gets there.
 P=/home/root/pedalctl
@@ -20,6 +20,7 @@ case "$QUERY_STRING" in
     param=*)  $P param $(arg) >/dev/null 2>&1 ;;
     input=*)  $P input $(arg) >/dev/null 2>&1 ;;
     cab=*)    $P cab $(arg) >/dev/null 2>&1 ;;
+    volume=*) $P volume $(arg) >/dev/null 2>&1 ;;
     save=*)   $P save $(arg) >/dev/null 2>&1 ;;
     load=*)   $P load $(arg) >/dev/null 2>&1 ;;
     delete=*) $P delete $(arg) >/dev/null 2>&1 ;;

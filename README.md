@@ -4,10 +4,10 @@ Real-time guitar multi-effect for the Terasic **DE10-Standard** (Cyclone V SoC).
 FPGA logic (no OS in the signal path); Linux on the ARM (HPS) sets up the pedalboard, from the command
 line or a web page.
 
-- 8 effects: booster, distortion (RAT-style), overdrive (Tube Screamer-style), tremolo, delay, auto-wah,
-  phaser, reverb (Freeverb)
+- 11 effects: booster, distortion (RAT-style), overdrive (Tube Screamer-style), tremolo, delay, auto-wah,
+  phaser, reverb (Freeverb), compressor, chorus, flanger
 - Chain any of them in any order (up to 8 slots), two knobs per effect
-- DC blocker + noise gate in front of the chain, cabinet simulator (512-tap FIR) after it
+- Noise gate in front of the chain, cabinet simulator (512-tap FIR) and output volume after it
 - Line or mic input, tuner, presets saved on the SD card
 - Exactly 48 kHz through the on-board WM8731 codec (24-bit to the codec, 16-bit through the effects)
 - Every effect has a bit-exact Python model, and a GHDL test checks the VHDL against it
@@ -31,10 +31,10 @@ HEX5/HEX4 show the first effect in the chain, HEX3..HEX0 and LEDR its knobs.
 | Path | What |
 |------|------|
 | `PedalFPGA_top.v` | Top level: HPS (Platform Designer `soc_system`) + `pedal_core`; only the pins in use |
-| `pedal_core.vhd` | Audio path: codec → DC blocker → noise gate → effect chain → codec |
+| `pedal_core.vhd` | Audio path: codec → noise gate → effect chain → cabinet → volume → codec |
 | `pedal_regs.vhd` | Register bank the HPS reads/writes (chain, knobs, config, tuner capture) |
 | `cab.vhd` | Cabinet simulator: 512-tap FIR after the chain |
-| `booster.vhd`, `drive.vhd`, `tremolo.vhd`, `delay.vhd`, `wah.vhd`, `phaser.vhd`, `reverb.vhd` | The effects (`drive` is both distortion and overdrive) |
+| `booster.vhd`, `drive.vhd`, `tremolo.vhd`, `delay.vhd`, `wah.vhd`, `phaser.vhd`, `reverb.vhd`, `compressor.vhd`, `moddelay.vhd` | The effects (`drive` is distortion and overdrive, `moddelay` chorus and flanger) |
 | `sat_pkg.vhd` | Saturation helpers |
 | `codec.vhd` | WM8731: register setup over I²C, 24-bit I²S in/out |
 | `make_soc_system.tcl`, `pedal_regs_hw.tcl` | Generate `soc_system.qsys` from the Terasic GHRD |
@@ -51,12 +51,13 @@ Registers at the start of the lightweight HPS-to-FPGA bridge (`0xFF200000`):
 
 | Offset | Register | |
 |--------|----------|-|
-| `0x00` | ID (RO) | `0x50ED0002` |
+| `0x00` | ID (RO) | `0x50ED0003` |
 | `0x04` | CHAIN | 8 slots × 4 bits, slot 0 = bits 3..0; value = effect id, `0xF` = empty |
-| `0x08 + 4·e` | PARAM[e] | bits 9..5 = knob A, bits 4..0 = knob B (0..31) |
-| `0x28` | CONFIG | bit 0 = mic input (0 = line), bit 1 = cabinet on |
-| `0x2C` | CAPTURE | write: capture the next 4096 input samples; read: bit 0 = done |
-| `0x30` | CAPDATA | read: next captured sample (signed); write: rewind |
+| `0x08 + 4·e` | PARAM[e] | bits 9..5 = knob A, bits 4..0 = knob B (0..31), e = 0..10 |
+| `0x34` | CONFIG | bit 0 = mic input (0 = line), bit 1 = cabinet on |
+| `0x38` | VOLUME | 0..31: 31 = 0 dB, 1.5 dB per step, 0 = mute |
+| `0x3C` | CAPTURE | write: capture the next 4096 input samples; read: bit 0 = done |
+| `0x40` | CAPDATA | read: next captured sample (signed); write: rewind |
 
 | Id | Effect | Knob A | Knob B |
 |----|--------|--------|--------|
@@ -68,6 +69,9 @@ Registers at the start of the lightweight HPS-to-FPGA bridge (`0xFF200000`):
 | 5 | auto-wah | Sensitivity | Resonance |
 | 6 | phaser | Rate | Depth |
 | 7 | reverb | Room | Damping |
+| 8 | compressor | Sustain (max gain 1–16×) | Level |
+| 9 | chorus | Rate (0.2–3 Hz) | Depth (7–22 ms) |
+| 10 | flanger | Rate (0.05–2 Hz) | Depth (0.5–5 ms) |
 
 On the board:
 
@@ -76,6 +80,7 @@ pedalctl chain overdrive delay reverb   # signal goes through them in this order
 pedalctl param delay 12 20              # knob A, knob B
 pedalctl input mic                      # or line
 pedalctl cab on                         # or off
+pedalctl volume 25                      # 0..31, 31 = 0 dB
 pedalctl tune                           # {"hz":82.38,"note":"E2","cents":-1}
 pedalctl save lead                      # presets live in /home/root/presets
 pedalctl load lead

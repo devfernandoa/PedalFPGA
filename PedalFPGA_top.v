@@ -59,8 +59,9 @@ module PedalFPGA_top (
     assign TD_RESET_N = 1'b0;
 
     wire [31:0] pedal_chain;
-    wire [79:0] pedal_params;
+    wire [109:0] pedal_params;
     wire [1:0]  pedal_config;
+    wire [4:0]  pedal_volume;
     wire [15:0] cap_sample;
     wire        cap_valid;
 
@@ -92,6 +93,7 @@ module PedalFPGA_top (
         .pedal_chain    (pedal_chain),
         .pedal_params   (pedal_params),
         .pedal_config   (pedal_config),
+        .pedal_volume   (pedal_volume),
         .pedal_cap_sample (cap_sample),
         .pedal_cap_valid  (cap_valid),
 
@@ -193,6 +195,7 @@ module PedalFPGA_top (
         .chain         (pedal_chain),
         .params        (pedal_params),
         .cfg           (pedal_config),
+        .volume        (pedal_volume),
         .cap_sample    (cap_sample),
         .cap_valid     (cap_valid),
         .AUD_BCLK      (AUD_BCLK),

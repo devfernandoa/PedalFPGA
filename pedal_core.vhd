@@ -1,5 +1,6 @@
 library ieee;
 use ieee.std_logic_1164.all;
+use ieee.math_real.all;
 USE ieee.NUMERIC_STD.all;
 
 -- Audio path: codec -> DC blocker -> noise gate -> effects -> codec.
@@ -8,8 +9,9 @@ entity pedal_core is
  port(		CLOCK_50 	:  in  std_logic;
 		--====CONTROL (pedal_regs)====--
 		chain 		:  in  std_logic_vector(31 downto 0);
-		params 		:  in  std_logic_vector(79 downto 0);
+		params 		:  in  std_logic_vector(109 downto 0);
 		cfg 		:  in  std_logic_vector(1 downto 0);   -- CONFIG: bit 0 mic input, bit 1 cab on
+		volume 		:  in  std_logic_vector(4 downto 0);   -- VOLUME: 31 = 0 dB, 1.5 dB/step, 0 = mute
 		cap_sample 	:  out std_logic_vector(15 downto 0);  -- input samples for the tuner capture
 		cap_valid 	:  out std_logic;
 		--====AUDIO====--
@@ -90,17 +92,28 @@ architecture a of pedal_core is
 	signal codec_rx, codec_tx : std_logic_vector(23 downto 0);
 	signal rx_round   : signed(24 downto 0);
 	signal sample_in  : std_logic_vector(15 downto 0);
-    
-    -- DC Blocker Signals
-    signal sample_dc  : std_logic_vector(15 downto 0);
-    signal prev_sample, prev_dc : signed(15 downto 0) := (others => '0');
+
+    -- Output volume, applied on the 24-bit codec word so quiet settings keep their resolution
+    type vol_table is array (0 to 31) of integer;
+    function vol_gains return vol_table is
+        variable t : vol_table;
+    begin
+        t(0) := 0;
+        for v in 1 to 31 loop
+            t(v) := integer(round(32767.0 * 10.0 ** (real(v - 31) * 1.5 / 20.0)));   -- Q15
+        end loop;
+        return t;
+    end function;
+    constant VOL_GAIN : vol_table := vol_gains;
+    signal vol_g : signed(15 downto 0) := to_signed(32767, 16);
     
     -- Noise Gate Signals
     signal sample_gated : std_logic_vector(15 downto 0);
     constant GATE_THRESH : integer := 10; -- Lowered threshold
     signal gate_timer : integer range 0 to 24000 := 0;
 
-	type sample_array is array (0 to 7) of std_logic_vector(15 downto 0);
+	constant N_FX : integer := 11;
+	type sample_array is array (0 to N_FX - 1) of std_logic_vector(15 downto 0);
 	signal fx_out     : sample_array;                    -- output of each effect, indexed by id
 	signal sample_out : std_logic_vector(15 downto 0) := (others => '0');
 	
@@ -116,13 +129,16 @@ architecture a of pedal_core is
     constant FX_WAH   : integer := 5;
     constant FX_PHS   : integer := 6;
     constant FX_REV   : integer := 7;
-    type param_array is array (0 to 7) of std_logic_vector(9 downto 0);
+    constant FX_COMP  : integer := 8;
+    constant FX_CHO   : integer := 9;
+    constant FX_FLA   : integer := 10;
+    type param_array is array (0 to N_FX - 1) of std_logic_vector(9 downto 0);
     -- params_s only changes on in_ready, a few cycles before the chain starts (see PedalFPGA.sdc multicycle paths)
-    signal params_s : std_logic_vector(79 downto 0) := (others => '0');
+    signal params_s : std_logic_vector(109 downto 0) := (others => '0');
     signal p        : param_array;
     signal p_cur    : std_logic_vector(9 downto 0);
 
-    -- First effect in the chain (shown on HEX5/4 + its knobs on HEX3-0/LEDR); >= 8 = empty
+    -- First effect in the chain (shown on HEX5/4 + its knobs on HEX3-0/LEDR); >= N_FX = empty
     signal current_effect : integer range 0 to 15 := 15;
 
     -- Effect chain (see the chain process)
@@ -133,7 +149,7 @@ architecture a of pedal_core is
     signal chain_sh   : std_logic_vector(31 downto 0) := (others => '1');  -- CHAIN snapshot, current slot in bits 3..0
     signal slot       : integer range 0 to 8 := 0;
     signal wait_cnt   : integer range 0 to SLOT_WAIT := 0;
-    signal fx_ce      : std_logic_vector(7 downto 0) := (others => '0');
+    signal fx_ce      : std_logic_vector(N_FX - 1 downto 0) := (others => '0');
     signal in_ready_d : std_logic := '0';
     -- Cabinet stage after the chain
     signal cab_ce, cab_done : std_logic := '0';
@@ -165,18 +181,7 @@ architecture a of pedal_core is
 begin 
 	
     
-    -- DC Blocker Process
-    process(CLOCK_50)
-    begin
-        if rising_edge(CLOCK_50) then
-            if in_ready = '1' then
-                -- y[n] = x[n] - x[n-1] + 0.996 * y[n-1]
-                prev_dc <= signed(sample_in) - prev_sample + prev_dc - (prev_dc / 256);
-                prev_sample <= signed(sample_in);
-                sample_dc <= std_logic_vector(prev_dc);
-            end if;
-        end if;
-    end process;
+    -- (DC offset is removed by the codec's own ADC high-pass filter, R5 in codec.vhd)
 
     -- Noise Gate Process with Hold (Hysteresis)
     -- Prevents chopping zero-crossings (distortion) and adds sustain
@@ -184,13 +189,13 @@ begin
     begin
         if rising_edge(CLOCK_50) then
             if in_ready = '1' then
-                if abs(signed(sample_dc)) > to_signed(GATE_THRESH, 16) then
+                if abs(signed(sample_in)) > to_signed(GATE_THRESH, 16) then
                     gate_timer <= 24000; -- Reset timer (~0.5s hold)
-                    sample_gated <= sample_dc;
+                    sample_gated <= sample_in;
                 else
                     if gate_timer > 0 then
                         gate_timer <= gate_timer - 1;
-                        sample_gated <= sample_dc;
+                        sample_gated <= sample_in;
                     else
                         sample_gated <= (others => '0');
                     end if;
@@ -209,12 +214,12 @@ begin
         end if;
     end process;
 
-    gen_p: for e in 0 to 7 generate
+    gen_p: for e in 0 to N_FX - 1 generate
         p(e) <= params_s(10*e+9 downto 10*e);
     end generate;
 
     current_effect <= to_integer(unsigned(chain(3 downto 0)));
-    p_cur <= p(current_effect mod 8) when current_effect < 8 else (others => '0');
+    p_cur <= p(current_effect) when current_effect < N_FX else (others => '0');
 
     -- Booster gain; the other effects map their knobs themselves
     process(CLOCK_50)
@@ -249,7 +254,14 @@ begin
 	-- wrap, +full scale), pad out.
 	rx_round  <= resize(signed(codec_rx), 25) + 128;
 	sample_in <= x"7FFF" when rx_round(24 downto 23) = "01" else std_logic_vector(rx_round(23 downto 8));
-	codec_tx  <= sample_out & x"00";
+	process(CLOCK_50)
+	begin
+		if rising_edge(CLOCK_50) then
+			vol_g <= to_signed(VOL_GAIN(to_integer(unsigned(volume))), 16);
+		end if;
+	end process;
+	-- |sample_out * vol_g| < 2^30, so >> 7 fits the 24-bit word (0 dB = the 16-bit sample << 8)
+	codec_tx  <= std_logic_vector(resize(shift_right(signed(sample_out) * vol_g, 7), 24));
 
 
 	-- Display: first effect in the chain and its knobs
@@ -258,6 +270,7 @@ begin
         -- Effect Display (Active Low: 0=ON, 1=OFF)
         -- Bank A: bO=Booster, d1=Distortion, Od=Overdrive, tr=Tremolo
         -- Bank B: dL=Delay, UA=Wah, PH=Phaser, rE=Reverb
+        -- Bank C: Co=Compressor, Ch=Chorus, FL=Flanger
         HEX5 <= "1100000" when current_effect = 0 else -- b (Booster)
                 "1000010" when current_effect = 1 else -- d (Distortion)
                 "0000001" when current_effect = 2 else -- O (Overdrive)
@@ -266,6 +279,9 @@ begin
                 "1000001" when current_effect = 5 else -- U (Wah)
                 "0001100" when current_effect = 6 else -- P (Phaser)
                 "1111010" when current_effect = 7 else -- r (Reverb)
+                "0110001" when current_effect = 8 else -- C (Compressor)
+                "0110001" when current_effect = 9 else -- C (Chorus)
+                "0111000" when current_effect = 10 else -- F (Flanger)
                 "1111110";                             -- - (bypass)
 
         HEX4 <= "0000001" when current_effect = 0 else -- O (bO)
@@ -276,6 +292,9 @@ begin
                 "0001000" when current_effect = 5 else -- A (UA)
                 "0001001" when current_effect = 6 else -- H (PH)
                 "0110000" when current_effect = 7 else -- E (rE)
+                "1100010" when current_effect = 8 else -- o (Co)
+                "1101000" when current_effect = 9 else -- h (Ch)
+                "1110001" when current_effect = 10 else -- L (FL)
                 "1111110";                             -- - (bypass)
 
 		HEX3<=seg7("000" & p_cur(9));
@@ -286,7 +305,7 @@ begin
         -- Effect chain: once per sample, run chain_x through CHAIN slots 0..7 in order.
         -- Per slot: hold chain_x for SLOT_WAIT+1 cycles, pulse that effect's ce for one cycle,
         -- then latch the effect's output (registered, or combinational for booster/distortion/
-        -- overdrive/tremolo) back into chain_x. Empty slots (id >= 8) are skipped.
+        -- overdrive/tremolo) back into chain_x. Empty slots (id >= N_FX) are skipped.
         -- Each effect exists once: an id repeated in CHAIN steps that effect twice per sample.
         process(CLOCK_50)
             variable fx : integer range 0 to 15;
@@ -313,11 +332,11 @@ begin
                                 sample_out <= chain_x;
                             end if;
                             ch_state   <= CH_IDLE;
-                        elsif fx >= 8 then           -- empty slot
+                        elsif fx >= N_FX then        -- empty slot
                             chain_sh <= x"F" & chain_sh(31 downto 4);
                             slot     <= slot + 1;
                         elsif wait_cnt = SLOT_WAIT then
-                            fx_ce(fx mod 8) <= '1';
+                            fx_ce(fx) <= '1';
                             wait_cnt <= 0;
                             ch_state <= CH_FIRE;
                         else
@@ -326,7 +345,7 @@ begin
                     when CH_FIRE =>                  -- ce is high now; the effect registers update at the end of this cycle
                         ch_state <= CH_LATCH;
                     when CH_LATCH =>
-                        chain_x  <= fx_out(fx mod 8);
+                        chain_x  <= fx_out(fx);
                         chain_sh <= x"F" & chain_sh(31 downto 4);
                         slot     <= slot + 1;
                         ch_state <= CH_WAIT;
@@ -340,9 +359,9 @@ begin
         inst_cab : entity work.cab
         port map (clk => CLOCK_50, ce => cab_ce, sample_in => chain_x, sample_out => cab_y, done => cab_done);
 
-        -- tuner capture: the input after the DC blocker, before the noise gate (quiet notes still count)
-        cap_sample <= sample_dc;
-        cap_valid  <= in_ready_d;
+        -- tuner capture: the input before the noise gate (quiet notes still count)
+        cap_sample <= sample_in;
+        cap_valid  <= in_ready;
 
         inst_booster : booster
         port map (	
@@ -421,6 +440,38 @@ begin
                 room_size  => p(FX_REV)(9 downto 5),  -- Room size
                 damping    => p(FX_REV)(4 downto 0),  -- Damping
                 sample_out => fx_out(FX_REV)
+        );
+
+        inst_compressor : entity work.compressor
+        port map (
+                clk        => CLOCK_50,
+                ce         => fx_ce(FX_COMP),
+                sample_in  => chain_x,
+                sustain    => p(FX_COMP)(9 downto 5),
+                level_k    => p(FX_COMP)(4 downto 0),
+                sample_out => fx_out(FX_COMP)
+        );
+
+        inst_chorus : entity work.moddelay
+        generic map (FLANGER => false)
+        port map (
+                clk        => CLOCK_50,
+                ce         => fx_ce(FX_CHO),
+                sample_in  => chain_x,
+                rate       => p(FX_CHO)(9 downto 5),
+                depth      => p(FX_CHO)(4 downto 0),
+                sample_out => fx_out(FX_CHO)
+        );
+
+        inst_flanger : entity work.moddelay
+        generic map (FLANGER => true)
+        port map (
+                clk        => CLOCK_50,
+                ce         => fx_ce(FX_FLA),
+                sample_in  => chain_x,
+                rate       => p(FX_FLA)(9 downto 5),
+                depth      => p(FX_FLA)(4 downto 0),
+                sample_out => fx_out(FX_FLA)
         );
 
 

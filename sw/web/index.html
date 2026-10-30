@@ -166,13 +166,15 @@
           <div class="seg" role="group" aria-label="Input jack"><button data-input="line">Line (blue)</button><button data-input="mic">Mic (pink)</button></div></div>
         <div class="row"><span>Cabinet simulator</span>
           <div class="seg" role="group" aria-label="Cabinet simulator"><button data-cab="off">Off</button><button data-cab="on">On</button></div></div>
+        <div class="row"><span>Volume</span><output id="vol-db" class="kval" for="vol"></output>
+          <input type="range" id="vol" min="0" max="31" step="1" aria-label="Output volume" style="flex-basis:100%;accent-color:var(--muted)"></div>
         <p class="hint" style="margin:0">Mic adds +20 dB for a guitar without a preamp. The cabinet tames distortion fizz for headphones or a PA.</p>
       </div>
       <div class="box">
         <h3>Presets</h3>
         <div class="row"><select id="preset" aria-label="Preset"></select><button class="btn" id="preset-load">Load</button><button class="btn" id="preset-del">Delete</button></div>
         <div class="row"><input type="text" id="preset-name" placeholder="name (a-z, 0-9)" maxlength="24" aria-label="New preset name"><button class="btn" id="preset-save">Save</button></div>
-        <p class="hint" style="margin:0">A preset stores the active chain, every knob, the input and the cabinet, on the board's SD card.</p>
+        <p class="hint" style="margin:0">A preset stores the active chain, every knob, the input, the cabinet and the volume, on the board's SD card.</p>
       </div>
       <div class="box">
         <h3>Tuner</h3>
@@ -207,6 +209,9 @@ const FX = {
   wah:        { label: 'Auto-wah',   c: '#9b5fd6', knobs: ['Sens', 'Resonance'], about: 'Filter follows your picking' },
   phaser:     { label: 'Phaser',     c: '#d6558f', knobs: ['Rate', 'Depth'],     about: 'Swirling notch sweep' },
   reverb:     { label: 'Reverb',     c: '#3fa8c4', knobs: ['Room', 'Damping'],   about: 'Freeverb room ambience' },
+  compressor: { label: 'Compressor', c: '#7f9a3a', knobs: ['Sustain', 'Level'],  about: 'Evens out picking, longer sustain' },
+  chorus:     { label: 'Chorus',     c: '#7a6cf0', knobs: ['Rate', 'Depth'],     about: 'Shimmering doubled sound' },
+  flanger:    { label: 'Flanger',    c: '#c4773c', knobs: ['Rate', 'Depth'],     about: 'Jet-plane comb sweep' },
 };
 const MAX = 31;
 const ICON = {
@@ -376,17 +381,18 @@ function render() {
 }
 
 // ---- amp panel ----
-let amp = { input: 'line', cab: false, presets: [] };
+let amp = { input: 'line', cab: false, volume: 31, presets: [] };
 function applyState(s) {
   if (!s || !s.chain) return;
   if (s.chain.join() !== activeChain().join()) board = loadLayout(s.chain);
   params = s.params;
-  amp = { input: s.input, cab: s.cab, presets: s.presets || [] };
+  amp = { input: s.input, cab: s.cab, volume: s.volume, presets: s.presets || [] };
   render(); renderAmp();
 }
 function renderAmp() {
   document.querySelectorAll('[data-input]').forEach(b => b.setAttribute('aria-pressed', b.dataset.input === amp.input));
   document.querySelectorAll('[data-cab]').forEach(b => b.setAttribute('aria-pressed', (b.dataset.cab === 'on') === amp.cab));
+  if (!volSending) { document.getElementById('vol').value = amp.volume; showVol(); }
   const sel = document.getElementById('preset'), cur = sel.value;
   sel.replaceChildren(...(amp.presets.length ? amp.presets : ['']).map(n => { const o = el('option'); o.value = n; o.textContent = n || 'no presets yet'; return o; }));
   if (amp.presets.includes(cur)) sel.value = cur;
@@ -395,6 +401,23 @@ function renderAmp() {
 }
 document.querySelectorAll('[data-input]').forEach(b => b.onclick = () => call('input=' + b.dataset.input).then(applyState));
 document.querySelectorAll('[data-cab]').forEach(b => b.onclick = () => call('cab=' + b.dataset.cab).then(applyState));
+// volume: 31 = 0 dB, 1.5 dB per step, 0 = mute; moves coalesced like the knobs
+const showVol = () => {
+  const v = +document.getElementById('vol').value;
+  document.getElementById('vol-db').textContent = v ? `${((v - 31) * 1.5).toFixed(1)} dB` : 'mute';
+};
+let volSending = false;
+document.getElementById('vol').addEventListener('input', async () => {
+  showVol();
+  if (volSending) return;
+  volSending = true;
+  let sent;
+  while (sent !== document.getElementById('vol').value) {
+    sent = document.getElementById('vol').value;
+    await call('volume=' + sent);
+  }
+  volSending = false;
+});
 document.getElementById('preset-load').onclick = () => {
   const n = document.getElementById('preset').value;
   if (n) call('load=' + n).then(s => { board = []; applyState(s); saveLayout(); });

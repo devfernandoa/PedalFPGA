@@ -26,7 +26,7 @@ set_interface_property s0 addressUnits WORDS
 set_interface_property s0 readLatency 1
 set_interface_property s0 readWaitTime 0
 set_interface_property s0 writeWaitTime 0
-add_interface_port s0 avs_address address Input 4
+add_interface_port s0 avs_address address Input 5
 add_interface_port s0 avs_read read Input 1
 add_interface_port s0 avs_write write Input 1
 add_interface_port s0 avs_writedata writedata Input 32
@@ -34,7 +34,8 @@ add_interface_port s0 avs_readdata readdata Output 32
 
 add_interface pedal conduit end
 add_interface_port pedal chain chain Output 32
-add_interface_port pedal params params Output 80
+add_interface_port pedal params params Output 110
 add_interface_port pedal cfg config Output 2
+add_interface_port pedal volume volume Output 5
 add_interface_port pedal cap_sample cap_sample Input 16
 add_interface_port pedal cap_valid cap_valid Input 1

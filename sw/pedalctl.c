@@ -4,17 +4,18 @@
  * The registers sit at offset 0 of the lightweight HPS-to-FPGA bridge (0xFF200000),
  * which u-boot enables (bridge_enable_handoff) after loading soc_system.rbf.
  *
- *   pedalctl id                       read ID (expect 0x50ED0002)
+ *   pedalctl id                       read ID (expect 0x50ED0003)
  *   pedalctl dump                     print every register
  *   pedalctl json                     state as JSON (for the web UI), presets included
  *   pedalctl chain <fx> [<fx> ...]    set the chain: audio goes through the effects in this order
- *                                     (up to 8, each at most once; names or 0..7)
+ *                                     (up to 8, each at most once; names or 0..10)
  *   pedalctl chain none               empty chain (clean signal)
  *   pedalctl param <fx> <a> <b>       set knob A and knob B (0..31) of an effect
  *   pedalctl input line|mic           codec input (mic = mic jack with +20 dB boost)
  *   pedalctl cab on|off               cabinet simulator after the chain
+ *   pedalctl volume <0..31>           output volume: 31 = 0 dB, 1.5 dB per step, 0 = mute
  *   pedalctl tune                     pitch of the input as JSON: {"hz":82.41,"note":"E2","cents":-3}
- *   pedalctl save|load|delete <name>  presets (chain + knobs + input + cab) in PRESET_DIR
+ *   pedalctl save|load|delete <name>  presets (chain + knobs + input + cab + volume) in PRESET_DIR
  *   pedalctl pitchtest                check the pitch detector on synthetic notes (no FPGA needed)
  */
 #include <dirent.h>
@@ -35,17 +36,18 @@
 #define REG_ID      0
 #define REG_CHAIN   1
 #define REG_PARAM   2 /* PARAM[e] = REG_PARAM + e */
-#define REG_CONFIG  10
-#define REG_CAPTURE 11
-#define REG_CAPDATA 12
+#define REG_CONFIG  13
+#define REG_VOLUME  14
+#define REG_CAPTURE 15
+#define REG_CAPDATA 16
 
 #define CFG_MIC 1u
 #define CFG_CAB 2u
 
-#define PEDAL_ID   0x50ED0002u
+#define PEDAL_ID   0x50ED0003u
 #define SLOT_EMPTY 0xFu
-#define N_FX       8
-#define N_REGS     11 /* CHAIN, PARAM[0..7], CONFIG: what a preset stores (registers 1..10) */
+#define N_FX       11
+#define N_REGS     15 /* CHAIN, PARAM[0..10], CONFIG, VOLUME: what a preset stores (registers 1..14) */
 
 #define FS     48000
 #define CAP_N  4096
@@ -54,6 +56,7 @@
 
 static const char *fx_names[N_FX] = {
     "booster", "distortion", "overdrive", "tremolo", "delay", "wah", "phaser", "reverb",
+    "compressor", "chorus", "flanger",
 };
 
 static int parse_fx(const char *s)
@@ -89,8 +92,9 @@ static int usage(void)
 {
     fprintf(stderr,
             "usage: pedalctl id | dump | json | chain none | chain <fx>... | param <fx> <a> <b>\n"
-            "                | input line|mic | cab on|off | tune | save|load|delete <name> | pitchtest\n"
-            "  fx: booster distortion overdrive tremolo delay wah phaser reverb (or 0..7)\n"
+            "                | input line|mic | cab on|off | volume <0..31> | tune\n"
+            "                | save|load|delete <name> | pitchtest\n"
+            "  fx: booster distortion overdrive tremolo delay wah phaser reverb compressor chorus flanger (or 0..10)\n"
             "  a, b: 0..31;  name: 1..24 of a-z 0-9\n");
     return 2;
 }
@@ -219,7 +223,7 @@ static int preset_path(char *buf, size_t n, const char *name)
     return 0;
 }
 
-/* a preset file is the raw values of registers 1..10, one hex number per line */
+/* a preset file is the raw values of registers 1..14, one hex number per line */
 static int preset_save(volatile uint32_t *regs, const char *name)
 {
     char path[128];
@@ -333,8 +337,9 @@ int main(int argc, char **argv)
             printf("%-10s A=%2u B=%2u\n", fx_names[e], (p >> 5) & 31, p & 31);
         }
         printf("CONFIG 0x%X: input %s, cab %s\n", cfg, cfg & CFG_MIC ? "mic" : "line", cfg & CFG_CAB ? "on" : "off");
+        printf("VOLUME %u\n", regs[REG_VOLUME] & 31);
     } else if (strcmp(cmd, "json") == 0) {
-        /* {"chain":["delay",...],"params":{"booster":[a,b],...},"input":"line","cab":false,"presets":[...]} */
+        /* {"chain":["delay",...],"params":{"booster":[a,b],...},"input":"line","cab":false,"volume":31,"presets":[...]} */
         uint32_t chain = regs[REG_CHAIN], cfg = regs[REG_CONFIG];
         printf("{\"chain\":[");
         for (int s = 0, n = 0; s < 8; s++) {
@@ -347,8 +352,8 @@ int main(int argc, char **argv)
             uint32_t p = regs[REG_PARAM + e];
             printf("%s\"%s\":[%u,%u]", e ? "," : "", fx_names[e], (p >> 5) & 31, p & 31);
         }
-        printf("},\"input\":\"%s\",\"cab\":%s,\"presets\":", cfg & CFG_MIC ? "mic" : "line",
-               cfg & CFG_CAB ? "true" : "false");
+        printf("},\"input\":\"%s\",\"cab\":%s,\"volume\":%u,\"presets\":", cfg & CFG_MIC ? "mic" : "line",
+               cfg & CFG_CAB ? "true" : "false", regs[REG_VOLUME] & 31);
         print_presets();
         printf("}\n");
     } else if (strcmp(cmd, "chain") == 0) {
@@ -385,6 +390,11 @@ int main(int argc, char **argv)
     } else if (strcmp(cmd, "cab") == 0 && argc == 3 && (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
         uint32_t cfg = regs[REG_CONFIG] & ~CFG_CAB;
         regs[REG_CONFIG] = cfg | (strcmp(argv[2], "on") == 0 ? CFG_CAB : 0);
+    } else if (strcmp(cmd, "volume") == 0 && argc == 3) {
+        int v = parse_knob(argv[2]);
+        if (v < 0)
+            return usage();
+        regs[REG_VOLUME] = (uint32_t)v;
     } else if (strcmp(cmd, "tune") == 0) {
         ret = tune(regs);
     } else if (strcmp(cmd, "save") == 0 && argc == 3) {

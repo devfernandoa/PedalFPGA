@@ -47,6 +47,13 @@ DLY_LP = one_pole(3500)
 WAH_ATT, WAH_REL = round(32768 * (1 - math.exp(-1 / (0.002 * FS)))), round(32768 * (1 - math.exp(-1 / (0.12 * FS))))
 COMBS = [1214, 1293, 1390, 1476, 1548, 1623, 1695, 1760]    # Freeverb lengths scaled 44.1k -> 48k
 ALLPASSES = [605, 480, 371, 245]
+COMP_GMAX = [min(65535, round(4096 * g)) for g in exp_table(1, 16)]   # Q12 max gain = sustain, 1x .. 16x
+COMP_T = 10000                                            # output peak the compressor holds (~ -10 dBFS)
+CHO_INC = [lfo_inc(f) for f in exp_table(0.2, 3)]
+FLA_INC = [lfo_inc(f) for f in exp_table(0.05, 2)]
+CHORUS = dict(inc=CHO_INC, base=336, span=23, fb=0)        # 7 ms + up to 15 ms sweep
+FLANGER = dict(inc=FLA_INC, base=24, span=7, fb=22938)     # 0.5 ms + up to 4.5 ms, feedback 0.7
+MOD_N = 2048
 
 
 # ------------------------------------------------------------------ new effects
@@ -180,6 +187,45 @@ def reverb(xs, a, b):
             ap_p[i] = (ap_p[i] + 1) % n
             ap_bo[i] = ab[i][ap_p[i]]
         out.append(sat16(x + ((v * 3) >> 1)))             # wet 1.5 (the comb input was scaled by 1/4)
+    return out
+
+
+def compressor(xs, a, b):
+    """Feedback compressor (Dyna Comp style): y = x * g; a peak follower on y pulls g down while it
+    is above COMP_T and lets it recover towards the sustain knob's maximum gain otherwise."""
+    g, env = 4096, 0
+    gmax, lev, out = COMP_GMAX[a], LEVEL[b], []
+    for x in xs:
+        y = sat16((x * g) >> 12)
+        out.append(sat16((y * lev) >> 12))
+        ay = abs(y) << 15
+        env_n = ay if ay > env else env - (env >> 11)              # instant attack, ~43 ms release
+        g_n = g - (g >> 10) if (env >> 15) > COMP_T else g + ((gmax - g) >> 12)
+        env, g = env_n, g_n
+    return out
+
+
+def moddelay(xs, a, b, p):
+    """Chorus / flanger: a delay line swept by a triangle LFO, read with linear interpolation, mixed
+    with the dry signal (flanger: 50/50 plus feedback, for deep notches; chorus: wet at -3 dB).
+    Taps are read one sample ahead, like delay(): the reads see the RAM before this sample's write."""
+    ram = [0] * MOD_N
+    wp = rp0 = rp1 = t0 = t1 = frac = phase = 0
+    inc, span, out = p['inc'][a], b * p['span'], []
+    for x in xs:
+        wet = t0 + (((t1 - t0) * frac) >> 15)
+        if p['fb']:
+            out.append(sat16((x + wet) >> 1))
+        else:
+            out.append(sat16(x + ((wet * 23170) >> 15)))
+        t0_n, t1_n = ram[rp0], ram[rp1]
+        ram[wp] = sat16(x + ((wet * p['fb']) >> 15))
+        dq = (p['base'] << 15) + span * tri(phase)              # delay in samples, Q15
+        dint, frac_n = dq >> 15, dq & 0x7FFF
+        rp0_n = (wp - dint) % MOD_N
+        rp1_n = (rp0_n - 1) % MOD_N
+        wp, rp0, rp1, t0, t1, frac = (wp + 1) % MOD_N, rp0_n, rp1_n, t0_n, t1_n, frac_n
+        phase = (phase + inc) & 0xFFFFFFFF
     return out
 
 
@@ -379,6 +425,34 @@ def check(sig, outdir):
     write_wav(outdir / 'reverb.wav', reverb(sig, 16, 16))
     write_wav(outdir / 'reverb_big.wav', reverb(sig, 28, 6))
 
+    # compressor: evens out loud and quiet playing, and sustains a decaying note
+    loud = [v * 2 for v in sig[:FS]]                         # same riff, 6 dB apart
+    quiet = [v // 2 for v in sig[:FS]]
+    for a in (0, 31):
+        d_in = db(rms(loud), rms(quiet))
+        d_out = db(rms(compressor(loud, a, 16)), rms(compressor(quiet, a, 16)))
+        print(f'compressor sustain {a:2d}: 12 dB in -> {d_out:4.1f} dB out')
+        assert d_out < d_in
+    assert db(rms(compressor(loud, 31, 16)), rms(compressor(quiet, 31, 16))) < 4, 'not compressing'
+    y = compressor(sig, 16, 16)
+    tail0, tail1 = sig[int(2.5 * FS):int(5 * FS)], y[int(2.5 * FS):int(5 * FS)]
+    print(f'compressor level vs clean (16,16): {db(rms(y), clean):+.1f} dB, chord tail {db(rms(tail1), rms(tail0)):+.1f} dB')
+    assert -6 < db(rms(y), clean) < 6 and rms(tail1) > rms(tail0)
+    write_wav(outdir / 'compressor.wav', y)
+
+    # chorus / flanger: level near clean, the delay actually sweeps, feedback stays stable
+    for name, p in [('chorus', CHORUS), ('flanger', FLANGER)]:
+        y = moddelay(sig, 16, 16, p)
+        print(f'{name:10s} level vs clean (16,16): {db(rms(y), clean):+.1f} dB, '
+              f'delay {p["base"] / FS * 1000:.1f} .. {(p["base"] + 31 * p["span"]) / FS * 1000:.1f} ms, '
+              f'rate {p["inc"][0] * FS / 2 ** 32:.2f} .. {p["inc"][31] * FS / 2 ** 32:.2f} Hz')
+        assert -6 < db(rms(y), clean) < 4
+        assert p['base'] + 31 * p['span'] + 2 < MOD_N
+        assert moddelay(sig[:4800], 16, 16, p) != moddelay(sig[:4800], 16, 0, p), 'depth does nothing'
+        y = moddelay([30000] + [0] * FS, 31, 31, p)
+        assert max(abs(v) for v in y[FS // 2:]) < 300, 'feedback does not decay'
+        write_wav(outdir / f'{name}.wav', moddelay(sig, 16, 16, p))
+
     # cab: same loudness on a distorted guitar, much less energy above 6 kHz
     c = cab_coefs(sig)
     d = drive(sig, 16, 16, DIST)
@@ -411,6 +485,9 @@ def vhdl_tables(sig):
     print(arr('DIST_COMP', DIST['comp']))
     print(arr('TREM_INC', TREM_INC))
     print(arr('PHS_INC', PHS_INC))
+    print(arr('COMP_GMAX', COMP_GMAX))
+    print(arr('CHO_INC', CHO_INC))
+    print(arr('FLA_INC', FLA_INC))
     c = cab_coefs(sig)
     print('    constant COEF : coef_t := (\n' + ',\n'.join('        ' + ', '.join(f'{v:5d}' for v in c[i:i + 16]) for i in range(0, CAB_TAPS, 16)) + ');')
     print(f'-- OD hp/lp {OD["hp"]}/{OD["lp"]}  DIST hp/lp {DIST["hp"]}/{DIST["lp"]}  DLY_LP {DLY_LP}  WAH att/rel {WAH_ATT}/{WAH_REL}')
