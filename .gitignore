@@ -50,7 +50,8 @@
 *.sopc_builder
 *.summary
 *.tcl
-*.txt # Explicitly add any text files used
+# Explicitly add any text files used
+*.txt
 *~
 *example*
 *sopc_*
@@ -81,3 +82,6 @@ soc_system.sopcinfo
 sim/out/
 __pycache__/
 !sw/web/*.html
+output_files/
+simulation/
+*.csv

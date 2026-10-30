@@ -1,102 +1,124 @@
 # PedalFPGA 🎸
 
-Real-time, FPGA-based guitar effects implemented in VHDL for Terasic DE10 / DE1-SoC boards.
+Real-time guitar multi-effect for the Terasic **DE10-Standard** (Cyclone V SoC). The audio path is pure
+FPGA logic (no OS in the signal path); Linux on the ARM (HPS) sets up the pedalboard, from the command
+line or a web page.
 
-This project implements a multi-effect pedal (Booster, Distortion, Overdrive, Tremolo) running on the Cyclone V FPGA. Audio I/O uses the on-board WM8731 codec via I2C/I2S. Effects run in parallel on the FPGA and are switched by push buttons; parameters are controlled by DIP switches and shown on 7-segment displays.
-
----
-
-## Contents
-
-- `testaudio_DE10SoC.vhd` - Top-level (DE10-Standard target)
-- `au_setup.vhd`, `au_in.vhd`, `au_out.vhd` - Codec setup and I2S input/output
-- `booster.vhd` - Clean boost (multiplier)
-- `distortion.vhd` - Hard clipping distortion
-- `overdrive.vhd` - Soft clipping (overdrive)
-- `tremolo.vhd`, `wave_setup.vhd` - Tremolo effect and LFO
-- `output_files/`, `db/` - Build outputs and project database
+- 8 effects: booster, distortion (RAT-style), overdrive (Tube Screamer-style), tremolo, delay, auto-wah,
+  phaser, reverb (Freeverb)
+- Chain any of them in any order (up to 8 slots), two knobs per effect
+- DC blocker + noise gate in front of the chain
+- 48 kHz, 16-bit, through the on-board WM8731 codec
+- Every effect has a bit-exact Python model, and a GHDL test checks the VHDL against it
 
 ---
 
-## Quick Features
+## Hookup
 
-- Real-time audio processing on the FPGA (no OS latency)
-- Four effects processed in parallel: Booster, Distortion, Overdrive, Tremolo
-- Noise gate + DC blocker to reduce hiss and remove DC offset
-- Parameters controlled with switches (`SW[9:0]`) and displayed on HEX / LED
-- Synth-friendly VHDL code with small, isolated modules for each effect
+| Jack | Use |
+|------|-----|
+| **Blue** (LINE IN) | Guitar in, through a preamp/buffer: a guitar alone is too quiet for line level |
+| **Green** (LINE OUT) | Amp or headphones |
+| Pink (MIC IN) | Not used |
 
----
-
-## Controls & Mapping
-
-- **Effect selection (KEY buttons):**
-  - KEY0 → Booster (clean boost)
-  - KEY1 → Distortion (hard clip)
-  - KEY2 → Overdrive (soft clip)
-  - KEY3 → Tremolo
-
-- **Switches (`SW`):**
-  - `SW[9..5]` — primary parameter (coarse): Gain / Drive / Rate
-  - `SW[4..0]` — secondary parameter (fine): Level / Depth
-
-- **Visual feedback:**
-  - `LEDR[9:0]` mirrors `SW[9:0]`
-  - `HEX4..HEX5` show active effect label
-  - `HEX0..HEX3` show numeric switch values
+HEX5/HEX4 show the first effect in the chain, HEX3..HEX0 and LEDR its knobs.
 
 ---
 
-## Build & Program (Quartus)
+## Files
 
-Requirements
+| Path | What |
+|------|------|
+| `PedalFPGA_top.v` | Top level: HPS (Platform Designer `soc_system`) + `pedal_core` |
+| `pedal_core.vhd` | Audio path: codec → DC blocker → noise gate → effect chain → codec |
+| `pedal_regs.vhd` | Register bank the HPS writes (chain + knobs) |
+| `booster.vhd`, `drive.vhd`, `tremolo.vhd`, `delay.vhd`, `wah.vhd`, `phaser.vhd`, `reverb.vhd` | The effects (`drive` is both distortion and overdrive) |
+| `sat_pkg.vhd` | Saturation helpers |
+| `au_setup.vhd`, `au_in.vhd`, `au_out.vhd` | WM8731 setup (I²C) and I²S in/out |
+| `make_soc_system.tcl`, `pedal_regs_hw.tcl` | Generate `soc_system.qsys` from the Terasic GHRD |
+| `sw/pedalctl.c` | CLI on the HPS that reads/writes the registers |
+| `sw/web/` | Web UI (static page + CGI calling `pedalctl`), served by busybox httpd |
+| `sim/fx_model.py` | Fixed-point models of the effects, property checks, WAV renders |
+| `sim/test_vhdl.py`, `sim/tb_fx.vhd` | GHDL test: VHDL vs model, sample by sample |
 
-- Intel Quartus Prime (matching project settings; e.g., 24.1)
-- Terasic DE10-Standard or DE1-SoC board
-- Line In/Out cables and a guitar preamp/buffer (recommended)
+---
 
-From shell (example):
+## Control
 
-```bash
-# compile with Quartus (project is PedalFPGA)
-quartus_sh --flow compile PedalFPGA
+Registers at the start of the lightweight HPS-to-FPGA bridge (`0xFF200000`):
 
-# program the device (example using the programmer in Quartus GUI or command):
-quartus_pgm -c USB-Blaster -m jtag -o "p;output_files/PedalFPGA.sof"
+| Offset | Register | |
+|--------|----------|-|
+| `0x00` | ID (RO) | `0x50ED0001` |
+| `0x04` | CHAIN | 8 slots × 4 bits, slot 0 = bits 3..0; value = effect id, `0xF` = empty |
+| `0x08 + 4·e` | PARAM[e] | bits 9..5 = knob A, bits 4..0 = knob B (0..31) |
+
+| Id | Effect | Knob A | Knob B |
+|----|--------|--------|--------|
+| 0 | booster | Gain | Fine |
+| 1 | distortion | Drive | Level |
+| 2 | overdrive | Drive | Level |
+| 3 | tremolo | Speed (0.5–12 Hz) | Depth |
+| 4 | delay | Time (20 ms–1 s) | Feedback |
+| 5 | auto-wah | Sensitivity | Resonance |
+| 6 | phaser | Rate | Depth |
+| 7 | reverb | Room | Damping |
+
+On the board:
+
+```sh
+pedalctl chain overdrive delay reverb   # signal goes through them in this order
+pedalctl param delay 12 20              # knob A, knob B
+pedalctl dump
 ```
 
-Notes
-
-- Project top-level is `testaudio_DE10SoC.vhd`. There may be a `testaudio_DE1SoC.vhd` version (backup) for DE1 boards.
-- Check `PedalFPGA.qsf` for pin assignments and constraints.
+Or open `http://<board-ip>/` for the stompbox UI: drag to reorder, footswitch to bypass.
 
 ---
 
-## Architecture & Signal Flow
+## Build
 
-1. `au_in` deserializes I2S from WM8731 into 16-bit samples.
-2. Samples pass through a **DC blocker** to remove offset.
-3. A **Noise Gate** mutes small signals (reduces hiss) and includes a hold timer to avoid chopping zero crossings.
-4. The clean signal is fed in parallel to Booster, Distortion, Overdrive and Tremolo.
-5. A multiplexer selects the active effect output (based on `KEY`), which goes to `au_out` for DAC/I2S output.
+Requires Quartus Prime (Lite is enough), the Terasic DE10-Standard GHRD, and an ARM cross compiler (see `sw/Makefile`).
 
-## Contributing & Testing
+```sh
+# copy the GHRD's soc_system.qsys here first; this trims it and adds pedal_regs
+qsys-script --script=make_soc_system.tcl --search-path="$PWD,$"
+qsys-generate soc_system.qsys --synthesis=VERILOG
+quartus_sh --flow compile PedalFPGA
 
-- Fork and submit PRs for small fixes (narrow scope — fix warnings, improve clarity, add unit/simulation tests in `simulation/`).
-- Add an `sdc` timing constraints file for better static timing analysis.
-- Provide a driver or mapping if you use a different ADC (e.g., LTC2308 instead of AD7928).
+cd sw
+make rbf deploy-rbf     # .sof -> .rbf onto the SD card, reboots (u-boot loads it)
+make deploy-web         # pedalctl + web UI + systemd service
+```
+
+`BOARD_IP` defaults to `169.254.0.13`; override with `make BOARD_IP=... deploy-web`.
+
+---
+
+## Testing
+
+```sh
+python3 sim/fx_model.py     # property checks on the models (level, LFO rate, stability...) + WAVs in sim/out/
+python3 sim/test_vhdl.py    # every effect's VHDL vs its model, bit-exact, at 3 knob settings
+```
+
+`test_vhdl.py` uses a local `ghdl` if there is one, otherwise the `ghdl/ghdl` Docker image (a few minutes).
+When changing an effect, change the model and the VHDL together and keep both tests passing.
 
 ---
 
 ## License
 
-This project uses the MIT license. See `LICENSE` for details.
+Copyright © 2025 Fernando Alzueta.
 
----
+The PedalFPGA design is licensed under the **CERN Open Hardware Licence v2 – Strongly Reciprocal**
+(CERN-OHL-S-2.0, see `LICENSE`). You may study, modify, build and sell it, but anything you distribute
+that is based on it, including a product, must come with its complete source under the same licence.
 
-If you'd like, I can also:
+**Commercial licensing:** to use this design in a product without releasing your source under
+CERN-OHL-S, contact fefealzueta@gmail.com for a separate commercial licence.
 
-- Add a short user guide for bench testing with an audio interface and scope,
-- Add a screenshot or picture of the board wiring and a small `HOWTO` for safe power and audio levels.
+**Third-party files** are not covered by either licence and keep their authors' terms:
 
-Enjoy building and playing with your FPGA pedal! 🎵
+- `au_setup.vhd`, `au_in.vhd`, `au_out.vhd`: Andoni Arruti
+- `PedalFPGA_top.v`, `PedalFPGA.qsf` and the GHRD that `make_soc_system.tcl` builds on: Terasic Technologies
