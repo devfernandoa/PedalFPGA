@@ -50,7 +50,8 @@
 *.sopc_builder
 *.summary
 *.tcl
-*.txt # Explicitly add any text files used
+# Explicitly add any text files used
+*.txt
 *~
 *example*
 *sopc_*
@@ -68,3 +69,19 @@ db/
 _output_files/
 PLLJ_PLLSPE_INFO.txt
 
+
+# PedalFPGA: hand-written Tcl is source; Platform Designer output is regenerated
+!pedal_regs_hw.tcl
+!make_soc_system.tcl
+soc_system/
+hps_isw_handoff/
+.qsys_edit/
+soc_system.sopcinfo
+*.qdf
+*.rbf
+sim/out/
+__pycache__/
+!sw/web/*.html
+output_files/
+simulation/
+*.csv

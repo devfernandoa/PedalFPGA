@@ -1,84 +1,70 @@
--- filepath: wah.vhd
+-- Auto-wah / envelope filter (Boss AW-3, Mu-Tron style): a resonant band-pass whose frequency follows
+-- how hard you play, since there is no expression pedal to sweep it by foot.
+--   envelope follower (2 ms attack, 120 ms release) -> frequency 350 Hz .. 2.5 kHz
+--   Chamberlin state-variable filter, band-pass output scaled by 1/Q so the peak gain stays the same.
+-- Same integer math as wah() in sim/fx_model.py.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
+use work.sat_pkg.all;
 
 entity wah is
     port (
         clk         : in  std_logic;
+        ce          : in  std_logic;                     -- 1 pulse per sample
         sample_in   : in  std_logic_vector(15 downto 0);
-        frequency   : in  std_logic_vector(4 downto 0);  -- SW[9:5] - frequência central
-        resonance   : in  std_logic_vector(4 downto 0);  -- SW[4:0] - ressonância (Q)
+        sensitivity : in  std_logic_vector(4 downto 0);  -- knob A: how far the envelope opens the filter
+        resonance   : in  std_logic_vector(4 downto 0);  -- knob B: Q = 1 .. 8
         sample_out  : out std_logic_vector(15 downto 0)
     );
 end entity wah;
 
-architecture a of wah is
-    -- Coeficientes do filtro passa-banda (state variable filter)
-    signal bp_out    : signed(31 downto 0) := (others => '0');
-    signal lp_out    : signed(31 downto 0) := (others => '0');
-    signal hp_out    : signed(31 downto 0) := (others => '0');
-    
-    signal bp_z1     : signed(31 downto 0) := (others => '0');
-    signal lp_z1     : signed(31 downto 0) := (others => '0');
-    
-    signal freq_coef : signed(15 downto 0) := (others => '0');
-    signal q_coef    : signed(15 downto 0) := (others => '0');
-    signal sample_in_s : signed(15 downto 0);
-    
+architecture rtl of wah is
+    constant F_MIN   : integer := 1501;   -- 2 sin(pi fc / fs) in Q15 for fc = 350 Hz
+    constant F_SPAN  : integer := 9200;   -- up to ~2.5 kHz
+    constant ATTACK  : integer := 340;    -- envelope one-pole coefficients, Q15
+    constant RELEASE : integer := 6;
+
+    signal env    : signed(31 downto 0) := (others => '0');  -- |x| envelope, x 2^15
+    signal f_coef : signed(15 downto 0) := to_signed(F_MIN, 16);
+    signal lp, bp : signed(31 downto 0) := (others => '0');  -- SVF states, x 256
 begin
-    sample_in_s <= signed(sample_in);
-    
     process(clk)
-        variable input_ext : signed(31 downto 0);
-        variable freq_val  : integer;
-        variable q_val     : integer;
-        variable bp_scaled : signed(31 downto 0);
-        variable lp_new    : signed(31 downto 0);
-        variable bp_new    : signed(31 downto 0);
-        variable mult_tmp  : signed(47 downto 0);
+        variable x     : signed(15 downto 0);
+        variable q     : signed(15 downto 0);   -- 1/Q in Q14
+        variable lp_n  : signed(31 downto 0);
+        variable hp    : signed(31 downto 0);
+        variable bp_n  : signed(31 downto 0);
+        variable ax    : signed(31 downto 0);
+        variable sweep : integer;
     begin
         if rising_edge(clk) then
-            -- Frequência de corte: 300Hz a 2500Hz mapeado
-            freq_val := 500 + to_integer(unsigned(frequency)) * 70;
-            freq_coef <= to_signed(freq_val, 16);
-            
-            -- Ressonância Q: 1 a 15
-            q_val := 2000 + to_integer(unsigned(resonance)) * 400;
-            q_coef <= to_signed(q_val, 16);
-            
-            -- Extensão do sinal de entrada (shift left 8 = *256)
-            input_ext := shift_left(resize(sample_in_s, 32), 8);
-            
-            -- State Variable Filter (SVF)
-            -- HP = input - LP - Q*BP
-            mult_tmp := bp_z1 * q_coef;
-            bp_scaled := mult_tmp(44 downto 13);  -- /8192
-            hp_out <= input_ext - lp_z1 - bp_scaled;
-            
-            -- BP = HP * freq + BP_z1
-            mult_tmp := hp_out * freq_coef;
-            bp_new := mult_tmp(45 downto 14) + bp_z1;  -- /16384
-            bp_out <= bp_new;
-            
-            -- LP = BP * freq + LP_z1
-            mult_tmp := bp_new * freq_coef;
-            lp_new := mult_tmp(45 downto 14) + lp_z1;  -- /16384
-            lp_out <= lp_new;
-            
-            -- Atualizar registradores
-            bp_z1 <= bp_new;
-            lp_z1 <= lp_new;
-            
-            -- Saída: passa-banda (efeito wah clássico)
-            if bp_new(31) = '0' and bp_new(23 downto 8) > 32767 then
-                sample_out <= std_logic_vector(to_signed(32767, 16));
-            elsif bp_new(31) = '1' and bp_new(23 downto 8) < -32768 then
-                sample_out <= std_logic_vector(to_signed(-32768, 16));
-            else
-                sample_out <= std_logic_vector(bp_new(23 downto 8));
+            if ce = '1' then
+                x := signed(sample_in);
+                q := to_signed(16384 - to_integer(unsigned(resonance)) * 462, 16);
+
+                -- state-variable filter (Chamberlin)
+                lp_n := lp + resize(shift_right(bp * f_coef, 15), 32);
+                hp   := shift_left(resize(x, 32), 8) - lp_n - resize(shift_right(bp * q, 14), 32);
+                bp_n := bp + resize(shift_right(hp * f_coef, 15), 32);
+                lp <= lp_n;
+                bp <= bp_n;
+                -- band-pass * (1/Q) = unity gain at the peak, x 2 to match the clean level
+                sample_out <= std_logic_vector(sat16(shift_left(shift_right(resize(shift_right(bp_n, 8), 32) * q, 14), 1)));
+
+                -- envelope follower: fast attack, slow release; the frequency uses it from the next sample
+                ax := shift_left(resize(abs(resize(x, 17)), 32), 15);
+                if ax > env then
+                    env <= env + resize(shift_right((ax - env) * to_signed(ATTACK, 16), 15), 32);
+                else
+                    env <= env + resize(shift_right((ax - env) * to_signed(RELEASE, 16), 15), 32);
+                end if;
+                sweep := to_integer(shift_right(resize(shift_right(env, 15), 18) * to_signed(to_integer(unsigned(sensitivity)), 7), 4));
+                if sweep > F_SPAN then
+                    sweep := F_SPAN;
+                end if;
+                f_coef <= to_signed(F_MIN + sweep, 16);
             end if;
         end if;
     end process;
-    
-end architecture a;
+end architecture rtl;
