@@ -171,7 +171,7 @@
         <p class="hint" style="margin:0">Mic adds +20 dB for a guitar without a preamp. The cabinet tames distortion fizz for headphones or a PA.</p>
       </div>
       <div class="box">
-        <h3>Presets</h3>
+        <h3>Presets <span id="preset-cur" style="letter-spacing:0;text-transform:none;font-weight:400"></span></h3>
         <div class="row"><select id="preset" aria-label="Preset"></select><button class="btn" id="preset-load">Load</button><button class="btn" id="preset-del">Delete</button></div>
         <div class="row"><input type="text" id="preset-name" placeholder="name (a-z, 0-9)" maxlength="24" aria-label="New preset name"><button class="btn" id="preset-save">Save</button></div>
         <p class="hint" style="margin:0">A preset stores the active chain, every knob, the input, the cabinet and the volume, on the board's SD card.</p>
@@ -381,13 +381,19 @@ function render() {
 }
 
 // ---- amp panel ----
-let amp = { input: 'line', cab: false, volume: 31, presets: [] };
+let amp = { input: 'line', cab: false, volume: 31, presets: [], current: '' };
+let lastState = '';
 function applyState(s) {
   if (!s || !s.chain) return;
+  const key = JSON.stringify(s);
+  if (key === lastState) return;           // nothing changed: keep the DOM (and any focus) as it is
+  lastState = key;
   if (s.chain.join() !== activeChain().join()) board = loadLayout(s.chain);
   params = s.params;
-  amp = { input: s.input, cab: s.cab, volume: s.volume, presets: s.presets || [] };
+  const newPreset = s.current !== amp.current;
+  amp = { input: s.input, cab: s.cab, volume: s.volume, presets: s.presets || [], current: s.current || '' };
   render(); renderAmp();
+  if (newPreset && amp.current) document.getElementById('preset').value = amp.current;
 }
 function renderAmp() {
   document.querySelectorAll('[data-input]').forEach(b => b.setAttribute('aria-pressed', b.dataset.input === amp.input));
@@ -398,6 +404,7 @@ function renderAmp() {
   if (amp.presets.includes(cur)) sel.value = cur;
   sel.disabled = !amp.presets.length;
   document.getElementById('preset-load').disabled = document.getElementById('preset-del').disabled = !amp.presets.length;
+  document.getElementById('preset-cur').textContent = amp.current ? '· ' + amp.current : '';
 }
 document.querySelectorAll('[data-input]').forEach(b => b.onclick = () => call('input=' + b.dataset.input).then(applyState));
 document.querySelectorAll('[data-cab]').forEach(b => b.onclick = () => call('cab=' + b.dataset.cab).then(applyState));
@@ -464,6 +471,18 @@ document.getElementById('tuner-btn').onclick = e => {
 call('').then(s => {
   if (s) applyState(s); else { render(); renderAmp(); }
 });
+
+// Follow changes made elsewhere (the HPS KEY button, another browser, the CLI): poll once a second,
+// but never while a knob or the volume is being dragged or a change is still being sent.
+let holding = 0;
+document.addEventListener('pointerdown', e => { if (e.target.closest('.knob, #vol')) holding++; });
+document.addEventListener('pointerup', () => { holding = 0; });
+document.addEventListener('pointercancel', () => { holding = 0; });
+const busy = () => holding || dirty.size || flushing || volSending || dragFrom >= 0;
+setInterval(() => {
+  if (busy() || document.hidden) return;
+  call('').then(s => { if (!busy()) applyState(s); });
+}, 1000);
 </script>
 </body>
 </html>

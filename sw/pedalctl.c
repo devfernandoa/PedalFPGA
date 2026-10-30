@@ -753,7 +753,7 @@ int main(int argc, char **argv)
         printf("CONFIG 0x%X: input %s, cab %s\n", cfg, cfg & CFG_MIC ? "mic" : "line", cfg & CFG_CAB ? "on" : "off");
         printf("VOLUME %u\n", regs[REG_VOLUME] & 31);
     } else if (strcmp(cmd, "json") == 0) {
-        /* {"chain":["delay",...],"params":{"booster":[a,b],...},"input":"line","cab":false,"volume":31,"presets":[...]} */
+        /* {"chain":[...],"params":{"booster":[a,b],...},"input":"line","cab":false,"volume":31,"presets":[...],"current":"lead"} */
         uint32_t chain = regs[REG_CHAIN], cfg = regs[REG_CONFIG];
         printf("{\"chain\":[");
         for (int s = 0, n = 0; s < 8; s++) {
@@ -769,7 +769,9 @@ int main(int argc, char **argv)
         printf("},\"input\":\"%s\",\"cab\":%s,\"volume\":%u,\"presets\":", cfg & CFG_MIC ? "mic" : "line",
                cfg & CFG_CAB ? "true" : "false", regs[REG_VOLUME] & 31);
         print_presets();
-        printf("}\n");
+        char cur[32];
+        read_current(cur, sizeof cur);
+        printf(",\"current\":\"%s\"}\n", cur); /* last preset loaded (button, web or CLI) */
     } else if (strcmp(cmd, "chain") == 0) {
         if (argc < 3 || argc > 2 + 8)
             return usage();
