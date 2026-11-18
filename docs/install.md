@@ -9,27 +9,19 @@ covers the failures.
 
 ## What you need
 
-<div class="grid cards" markdown>
+**Hardware**
 
--   :material-developer-board:{ .lg .middle } **Hardware**
+- Terasic **DE10-Standard** and its 12 V supply
+- micro-SD card, 8 GB or more
+- Ethernet cable (board ↔ PC) and the mini-USB cable (UART console)
+- Guitar, amp / powered speakers / headphones, 3.5 mm ↔ ¼" adapters
 
-    ---
+**Software, on a Linux PC**
 
-    - Terasic **DE10-Standard** and its 12 V supply
-    - micro-SD card, 8 GB or more
-    - Ethernet cable (board ↔ PC) and the mini-USB cable (UART console)
-    - Guitar, amp / powered speakers / headphones, 3.5 mm ↔ ¼" adapters
-
--   :material-laptop:{ .lg .middle } **Software (on a Linux PC)**
-
-    ---
-
-    - **Quartus Prime Lite** 25.1, Cyclone V device support (Platform Designer included)
-    - Terasic **DE10-Standard System CD** (for the GHRD)
-    - ARM cross compiler `gcc-linaro-7.4.1-2019.02-x86_64_arm-linux-gnueabihf`
-    - `git`, `make`, `ssh`/`scp`, Python 3 (+ `numpy`), and GHDL **or** Docker for the tests
-
-</div>
+- **Quartus Prime Lite** 25.1 with Cyclone V device support (Platform Designer included)
+- Terasic **DE10-Standard System CD** (for the GHRD)
+- ARM cross compiler `gcc-linaro-7.4.1-2019.02-x86_64_arm-linux-gnueabihf`
+- `git`, `make`, `ssh`/`scp`, Python 3 (+ `numpy`), and GHDL **or** Docker for the tests
 
 ## 1. Prepare the board
 

@@ -1,28 +1,4 @@
-/* Home page hero */
-.hero {
-  padding: 2.4rem 1.6rem;
-  margin: 0 0 2rem;
-  border-radius: 12px;
-  color: #fff;
-  background: linear-gradient(135deg, #4527a0 0%, #7e57c2 55%, #ff8f00 140%);
-}
-.hero h1 { color: #fff; margin: 0 0 .4rem; font-weight: 800; }
-.hero p { font-size: 1.05rem; max-width: 46rem; opacity: .95; margin: 0 0 1.2rem; }
-.hero .md-button { color: #fff; border-color: #fff; margin: .2rem .4rem .2rem 0; }
-.hero .md-button--primary { background: #ffc107; border-color: #ffc107; color: #311b92; }
-.hero .md-button:hover { background: #fff; color: #4527a0; border-color: #fff; }
-
-/* Key numbers */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .8rem; margin: 1.2rem 0 2rem; }
-.stats div {
-  border: 1px solid var(--md-default-fg-color--lightest);
-  border-radius: 10px; padding: .8rem 1rem;
-}
-.stats b { display: block; font-size: 1.5rem; color: var(--md-primary-fg-color); line-height: 1.2; }
-[data-md-color-scheme="slate"] .stats b { color: var(--md-accent-fg-color); }
-.stats span { font-size: .75rem; color: var(--md-default-fg-color--light); }
-
-/* Cards a little softer */
-.md-typeset .grid.cards > ul > li { border-radius: 10px; }
-.md-typeset .mermaid { text-align: center; margin: 1.5rem 0; }
-.md-typeset h1 { font-weight: 800; }
+/* Diagrams: full width, readable text */
+.md-typeset .mermaid { margin: 1.5rem 0; }
+.md-typeset .mermaid .nodeLabel,
+.md-typeset .mermaid .edgeLabel { font-size: 15px; }
