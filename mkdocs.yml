@@ -1,0 +1,42 @@
+site_name: 'PedalFPGA: a guitar multi-effect in FPGA fabric'
+site_url: https://devfernandoa.github.io/PedalFPGA/
+repo_url: https://github.com/devfernandoa/PedalFPGA
+edit_uri: edit/main/docs/
+copyright: 'Copyright &copy; 2025 Fernando Alzueta, CERN-OHL-S-2.0'
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.code.copy
+  palette:
+    primary: white
+    accent: pink
+
+nav:
+  - Overview: index.md
+  - 1. Talking to the codec: codec.md
+  - 2. Your first effect: effect.md
+  - 3. A chain of effects: chain.md
+  - 4. Registers for the HPS: hps.md
+  - 5. Control from Linux: linux.md
+  - 6. When it goes wrong: troubleshooting.md
+  - 7. Going further: further.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js

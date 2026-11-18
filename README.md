@@ -4,6 +4,8 @@ Real-time guitar multi-effect for the Terasic **DE10-Standard** (Cyclone V SoC).
 FPGA logic (no OS in the signal path); Linux on the ARM (HPS) sets up the pedalboard, from the command
 line or a web page.
 
+**Step-by-step tutorial:** [devfernandoa.github.io/PedalFPGA](https://devfernandoa.github.io/PedalFPGA/)
+
 - 11 effects: booster, distortion (RAT-style), overdrive (Tube Screamer-style), tremolo, delay, auto-wah,
   phaser, reverb (Freeverb), compressor, chorus, flanger
 - Chain any of them in any order (up to 8 slots), two knobs per effect
