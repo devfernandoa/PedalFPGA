@@ -1,42 +1,139 @@
-# PedalFPGA: a guitar multi-effect in FPGA fabric, controlled from Linux
+---
+hide:
+  - navigation
+  - toc
+---
 
-- **Author:** Fernando Alzueta
-- **Course:** Embarcados Avançados (SoC and Embedded Linux), Insper
-- **Board:** Terasic DE10-Standard (Cyclone V SoC: FPGA + dual-core ARM, the *HPS*)
-- **Source:** [github.com/devfernandoa/PedalFPGA](https://github.com/devfernandoa/PedalFPGA)
+<div class="hero" markdown>
 
-In this tutorial you build a real-time guitar effects pedal on the DE10-Standard. The audio never
-touches the ARM: samples come from the on-board WM8731 codec, run through a chain of effects written
-in VHDL and go back out, all in FPGA logic, one sample every 20.8 µs with no operating system in the
-way. Linux on the HPS only *configures* the pedal: which effects are on, in which order, and where the
-knobs are, through a small register bank on the lightweight HPS-to-FPGA bridge. On top of that you
-add a command-line tool and a web page served by the board.
+# :material-guitar-electric: PedalFPGA
 
-The [course tutorials](https://insper.github.io/Embarcados-Avancados/) show how to blink an FPGA LED
-from the HPS, and the 2020 student tutorial
-[Audio na DE10](https://insper.github.io/Embarcados-Avancados/2020/Audio/) shows how to get sound in
-and out of the codec. This one goes further on both sides: a hand-written codec interface at exactly
-48 kHz, DSP in fixed point verified bit by bit against a Python model, a time-multiplexed effect chain
-with its timing constraints, and a custom Avalon peripheral driven from user space.
+A real-time guitar multi-effect running entirely in the FPGA fabric of a **DE10-Standard**, with
+Linux on the ARM turning the knobs. No operating system in the signal path: one sample in, one
+sample out, every 20.8 µs.
 
-## What you will build
+[Install it :material-download:](install.md){ .md-button .md-button--primary }
+[Build it step by step :material-school:](codec.md){ .md-button }
+[Source on GitHub :fontawesome-brands-github:](https://github.com/devfernandoa/PedalFPGA){ .md-button }
 
-```text
- guitar ─► WM8731 ═I²S═► codec_i2s ─► noise gate ─► slot 0 ─► … ─► slot 7 ─► cabinet ─► volume ─► codec_i2s ═I²S═► WM8731 ─► amp
-             ▲                                            ▲
-             └═I²C═ codec_cfg                             │ CHAIN, PARAM[e], CONFIG, VOLUME
-                                                      pedal_regs                                          FPGA, 50 MHz, no OS
- ════════════════════════════════════════════════════════ ▲ ══ lightweight HPS-to-FPGA bridge (Avalon-MM) ═══════════════
-                                                      pedalctl ◄── CGI ◄── busybox httpd ◄── browser        HPS, Linux
+</div>
+
+<div class="stats" markdown>
+<div><b>11</b><span>effects, VHDL</span></div>
+<div><b>8</b><span>slots, any order</span></div>
+<div><b>48 kHz</b><span>exact, via a fractional PLL</span></div>
+<div><b>1041</b><span>clock cycles per sample</span></div>
+<div><b>0</b><span>samples differing from the Python model</span></div>
+</div>
+
+## Architecture
+
+```mermaid
+flowchart LR
+    guitar([🎸 Guitar]) --> adc
+    subgraph codec["WM8731 codec"]
+        adc[ADC]
+        dac[DAC]
+    end
+    dac --> amp([🔊 Amp])
+
+    subgraph fpga["FPGA fabric · 50 MHz · no OS"]
+        direction LR
+        i2s_rx["codec_i2s<br/>I²S receive"] --> gate[Noise gate]
+        gate --> chain
+        subgraph chain["Effect chain · 8 time-shared slots"]
+            direction LR
+            s0[slot 0] --> s1[slot 1] --> sd[…] --> s7[slot 7]
+        end
+        chain --> cab["Cabinet<br/>512-tap FIR"] --> vol[Volume] --> i2s_tx["codec_i2s<br/>I²S transmit"]
+        cfg["codec_cfg<br/>I²C setup"]
+        regs[("pedal_regs<br/>CHAIN · PARAM · CONFIG<br/>VOLUME · CAPTURE")]
+        regs -. knobs, order .-> chain
+        regs -. cab, volume .-> vol
+        i2s_rx -. tuner capture .-> regs
+    end
+
+    adc == I²S ==> i2s_rx
+    i2s_tx == I²S ==> dac
+    cfg -- I²C --> codec
+
+    subgraph hps["HPS · dual ARM Cortex-A9 · Linux"]
+        direction TB
+        browser([Browser]) --> httpd[busybox httpd] --> cgi[CGI script] --> pedalctl
+        key([HPS KEY + LCD]) --> pedalctl
+        pedalctl["pedalctl<br/>mmap /dev/mem"]
+    end
+
+    pedalctl == "Lightweight HPS-to-FPGA bridge<br/>0xFF200000 · Avalon-MM" ==> regs
+
+    classDef io fill:#ffecb3,stroke:#ff8f00,color:#3e2723
+    classDef hw fill:#ede7f6,stroke:#5e35b1,color:#311b92
+    classDef sw fill:#e0f2f1,stroke:#00897b,color:#004d40
+    class guitar,amp,browser,key io
+    class i2s_rx,i2s_tx,gate,cab,vol,cfg,regs,s0,s1,sd,s7 hw
+    class httpd,cgi,pedalctl sw
 ```
 
-The finished pedal has 11 effects (booster, distortion, overdrive, tremolo, delay, auto-wah, phaser,
-reverb, compressor, chorus, flanger), up to 8 of them chained in any order with two knobs each, plus a
-noise gate, a cabinet simulator and an output volume. The tutorial walks through the parts every one of
-those effects depends on and builds one effect (the tremolo) from scratch; the others follow the same
-pattern and are in the repository.
+The audio (thick arrows) never leaves the FPGA. Linux only writes **registers** (dotted arrows):
+which effects are on and in what order, the knobs, the input and the volume. The FPGA picks the
+new values up between two samples, so changes are instant and click-free.
 
-## How the tutorial is organised
+## What's inside
+
+<div class="grid cards" markdown>
+
+-   :material-tune-vertical:{ .lg .middle } **11 effects, 2 knobs each**
+
+    ---
+
+    Booster, distortion, overdrive, tremolo, delay, auto-wah, phaser, reverb, compressor, chorus
+    and flanger. Up to 8 in any order, plus a noise gate, a cabinet simulator and an output volume.
+
+-   :material-check-decagram:{ .lg .middle } **Bit-exact verification**
+
+    ---
+
+    Every effect has an integer Python model. A GHDL testbench runs the VHDL and compares the
+    output with the model, sample by sample.
+
+-   :material-web:{ .lg .middle } **Web UI and CLI**
+
+    ---
+
+    Drag stompboxes to reorder them, turn the knobs, save presets and tune your guitar from a
+    browser, or script everything with `pedalctl`.
+
+-   :material-gamepad-variant:{ .lg .middle } **A real front panel**
+
+    ---
+
+    The HPS KEY button steps through presets and the on-board LCD shows the preset name, so the
+    board works as a pedal with no computer attached.
+
+</div>
+
+## Two ways to use this site
+
+<div class="grid cards" markdown>
+
+-   :material-rocket-launch:{ .lg .middle } **Just run it**
+
+    ---
+
+    Build the bitstream and the software and put them on the board, in one page.
+
+    [:octicons-arrow-right-24: Install](install.md)
+
+-   :material-school:{ .lg .middle } **Understand and rebuild it**
+
+    ---
+
+    A five-part tutorial: the codec, a first effect, the chain, the HPS registers, the Linux side.
+    Theory where it is needed, and a checkpoint you can run at the end of each part.
+
+    [:octicons-arrow-right-24: Start the tutorial](codec.md)
+
+</div>
 
 | Part | You learn | You get |
 |------|-----------|---------|
@@ -45,42 +142,27 @@ pattern and are in the repository.
 | [3. A chain of effects](chain.md) | Time-multiplexing, cycle budgets, multicycle constraints | Any effects, any order |
 | [4. Registers for the HPS](hps.md) | Avalon-MM slaves, Platform Designer, the LW bridge | Knobs the ARM can turn |
 | [5. Control from Linux](linux.md) | `/dev/mem` + `mmap`, cross-compiling, CGI | `pedalctl` and a web UI |
-| [6. When it goes wrong](troubleshooting.md) | The critical points and how to debug them | |
-| [7. Going further](further.md) | Where to go next | |
+| [When it goes wrong](troubleshooting.md) | The critical points and how to debug them | |
+| [Going further](further.md) | Where to go next, references | |
 
-Each part ends in something you can run. Do them in order: every part uses the previous one.
+## Where this fits in the course
 
-## What you need
+This is a student tutorial for **Embarcados Avançados** (SoC and Embedded Linux) at Insper. The
+[course tutorials](https://insper.github.io/Embarcados-Avancados/) show how to blink an FPGA LED from
+the HPS, and the 2020 student tutorial
+[Audio na DE10](https://insper.github.io/Embarcados-Avancados/2020/Audio/) gets sound in and out of
+the codec. This one goes further on both sides: a hand-written codec interface at exactly 48 kHz, DSP
+in fixed point verified bit by bit, a time-multiplexed effect chain with its timing constraints, and
+a custom Avalon peripheral driven from user space.
 
-**Hardware**
-
-- Terasic DE10-Standard and its power supply, a micro-SD card (8 GB or more), USB cable (UART), Ethernet cable
-- A guitar (or any line-level source: a phone works) and an amp, powered speakers or headphones
-- 3.5 mm ↔ ¼" adapters for the guitar and the amp
-
-**Software** (the versions used here; newer ones should work)
-
-- Quartus Prime Lite 25.1 with Cyclone V support, Platform Designer included
-- The DE10-Standard System CD from Terasic (for the *GHRD*, the Golden Hardware Reference Design)
-- A Linux SD card for the DE10-Standard whose u-boot loads `soc_system.rbf` from the FAT partition and
-  enables the HPS-to-FPGA bridges: the course image from
-  [info-SDcard](https://insper.github.io/Embarcados-Avancados/info-SDcard/) is one
-- The ARM cross compiler `gcc-linaro-7.4.1-2019.02-x86_64_arm-linux-gnueabihf`, as in
-  [Tutorial-HPS-BuildSystem](https://insper.github.io/Embarcados-Avancados/Tutorial-HPS-BuildSystem/)
-- Python 3 and either [GHDL](https://github.com/ghdl/ghdl) or Docker (for the simulations)
-
-**Background:** the course tutorials up to
+**Before you start** you should have done the course tutorials up to
 [Blink FPGA LED from HPS](https://insper.github.io/Embarcados-Avancados/Tutorial-HPS-FPGA-BlinkLED/):
-you should know how to compile a Quartus project, boot the board from the SD card and `ssh` into it.
-
-Get the code:
-
-```sh
-git clone https://github.com/devfernandoa/PedalFPGA
-cd PedalFPGA
-```
+compile a Quartus project, boot the board from the SD card and `ssh` into it. The full list of
+hardware and software is on the [Install](install.md#what-you-need) page.
 
 !!! info "A few numbers to keep in mind"
     - Sample rate \(f_s = 48\,\text{kHz}\): one sample every \(1/f_s = 20.83\,\mu\text{s}\)
     - FPGA clock 50 MHz: **1041 clock cycles per sample**. Every effect in the chain has to fit in that budget.
     - Samples are 16-bit signed (−32768 … 32767) inside the effects, 24-bit at the codec.
+
+<small>Fernando Alzueta · Insper, Embarcados Avançados · board: Terasic DE10-Standard (Cyclone V SoC 5CSXFC6D6)</small>

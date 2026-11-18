@@ -1,42 +1,89 @@
-site_name: 'PedalFPGA: a guitar multi-effect in FPGA fabric'
+site_name: PedalFPGA
+site_description: A real-time guitar multi-effect in the FPGA fabric of a DE10-Standard, controlled from Linux.
+site_author: Fernando Alzueta
 site_url: https://devfernandoa.github.io/PedalFPGA/
 repo_url: https://github.com/devfernandoa/PedalFPGA
+repo_name: devfernandoa/PedalFPGA
 edit_uri: edit/main/docs/
-copyright: 'Copyright &copy; 2025 Fernando Alzueta, CERN-OHL-S-2.0'
+copyright: 'Copyright &copy; 2025 Fernando Alzueta · CERN-OHL-S-2.0'
 
 theme:
   name: material
+  icon:
+    logo: material/guitar-electric
+    repo: fontawesome/brands/github
+  favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
     - navigation.sections
     - navigation.footer
+    - navigation.top
+    - toc.follow
     - content.code.copy
+    - content.code.annotate
+    - search.highlight
   palette:
-    primary: white
-    accent: pink
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
 
 nav:
-  - Overview: index.md
-  - 1. Talking to the codec: codec.md
-  - 2. Your first effect: effect.md
-  - 3. A chain of effects: chain.md
-  - 4. Registers for the HPS: hps.md
-  - 5. Control from Linux: linux.md
-  - 6. When it goes wrong: troubleshooting.md
-  - 7. Going further: further.md
+  - Home: index.md
+  - Install: install.md
+  - Tutorial:
+      - 1. Talking to the codec: codec.md
+      - 2. Your first effect: effect.md
+      - 3. A chain of effects: chain.md
+      - 4. Registers for the HPS: hps.md
+      - 5. Control from Linux: linux.md
+  - Reference:
+      - When it goes wrong: troubleshooting.md
+      - Going further: further.md
+
+extra_css:
+  - assets/extra.css
 
 markdown_extensions:
   - admonition
   - attr_list
+  - md_in_html
   - footnotes
+  - tables
   - toc:
       permalink: true
   - pymdownx.arithmatex:
       generic: true
   - pymdownx.details
-  - pymdownx.superfences
-  - pymdownx.highlight
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.keys
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 
 extra_javascript:
   - https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js
